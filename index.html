@@ -114,6 +114,11 @@ textarea{min-height:90px;resize:vertical}
 .days i.on{background:var(--gradGold);border:0;color:#1a1205}
 .photos{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 .photos img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px}
+.gal{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.gal .m{position:relative;aspect-ratio:1;border-radius:10px;overflow:hidden;background:var(--card2);cursor:pointer}
+.gal .m img,.gal .m video{width:100%;height:100%;object-fit:cover;display:block}
+.gal .m span{position:absolute;left:4px;bottom:4px;font-size:10px;background:rgba(0,0,0,.65);padding:1px 5px;border-radius:6px}
+.ultimo{width:100%;max-height:340px;object-fit:cover;border-radius:12px;display:block;background:#000}
 .hero{position:relative;border-radius:18px;overflow:hidden;margin-bottom:12px;border:1px solid var(--gold3);min-height:150px;
   background:url(logo.jpg) center 42%/cover}
 .hero::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.15),rgba(0,0,0,.85))}
@@ -149,7 +154,7 @@ textarea{min-height:90px;resize:vertical}
 /* ====================== DATOS ====================== */
 const KEY='kingbarber_v1';
 const DEF={
-  clientes:[], ventas:[], gastos:[], citas:[], fotos:[], actividad:{}, productos:[],
+  clientes:[], ventas:[], gastos:[], citas:[], fotos:[], actividad:{}, productos:[], media:[],
   trivia:{cur:null,usadas:[],ok:0,mal:0,dia:null,res:null},
   servicios:[{n:'Corte',p:10000},{n:'Corte + Barba',p:14000},{n:'Barba',p:6000},{n:'Corte niño',p:8000},{n:'Diseño / Líneas',p:3000}],
   inventario:[
@@ -544,19 +549,22 @@ function formVenta(id,pre){
   ${id?'':`<div class="tabs"><div class="tab on">✂️ Servicio</div><div class="tab" onclick="formVentaProd(null,{clienteId:val('vC')})">👕 Producto</div></div>`}
   <label>Cliente</label><select id="vC" onchange="chkGratis()">${cliOptions(v.clienteId)}</select>
   <div id="vNew" style="${v.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="vN" placeholder="Opcional"></div><div><label>WhatsApp</label><input id="vT" inputmode="tel" placeholder="9 1234 5678"></div></div><label>Cumpleaños (opcional)</label>${cumpleInputs('vB','')}</div>
-  <div id="vGr"></div>
+  <div id="vGr"></div><div id="vUlt"></div>
   <label>Servicio</label><div class="chips" id="vS">${db.servicios.map(s=>`<div class="chip ${s.n===sv?'on':''}" data-n="${esc(s.n)}" data-p="${s.p}" onclick="pickServ(this)">${esc(s.n)}<small>${money(s.p)}</small></div>`).join('')}</div>
   <div class="grid2"><div><label>Precio</label><input id="vM" type="number" inputmode="numeric" value="${v.monto??(db.servicios.find(s=>s.n===sv)||{}).p??''}"></div>
   <div><label>Propina</label><input id="vP" type="number" inputmode="numeric" value="${v.propina||''}" placeholder="0"></div></div>
   <label>Pago</label><div class="chips" id="vPg">${MEDIOS.map(p=>`<div class="chip ${p===v.pago?'on':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${p}</div>`).join('')}</div>
   <label class="flex" style="margin-top:12px"><input type="checkbox" id="vG" style="width:22px;height:22px" ${v.gratis?'checked':''} ${id?'data-edit="1"':''}> Corte gratis (premio tarjeta)</label>
+  <label>📸 Foto o video del corte (opcional)</label>
+  <label class="btn sec block" style="margin:0;color:var(--txt)"><input id="vMedia" type="file" accept="image/*,video/*" multiple hidden onchange="$('#vMediaN').textContent=this.files.length?this.files.length+' archivo(s) listo(s) ✅':''">📷 Tomar o elegir foto / video</label>
+  <div id="vMediaN" class="mut mt"></div>
   <label>Fecha</label><input id="vF" type="date" value="${v.fecha}">
   <button class="btn block mt" id="btnGuardar" data-txt="Guardar venta" onclick="saveVenta('${id||''}','${v.citaId||''}')">Guardar venta</button>
   ${id?btnBorrar():''}`);
   $('#vC').addEventListener('change',e=>$('#vNew').style.display=e.target.value?'none':'');
   chkGratis();
 }
-function chkGratis(){const c=val('vC');const e=$('#vGr'),g=$('#vG');if(!e||!g||g.dataset.edit)return;
+function chkGratis(){ultimoCorteVenta();const c=val('vC');const e=$('#vGr'),g=$('#vG');if(!e||!g||g.dataset.edit)return;
   const pr=c&&tieneTarjeta(c)?premioEn(proximo(c)):null;
   if(pr&&proximo(c)===meta()){e.innerHTML=`<div class="pill gold mt" style="display:inline-block">🎁 Corte ${meta()}: ${esc(pr.p)}</div>`;g.checked=true;g.dataset.auto=1}
   else if(pr){e.innerHTML=`<div class="pill gold mt" style="display:inline-block">🎁 Este corte (${proximo(c)}°) incluye: ${esc(pr.p)}</div>`;if(g.dataset.auto){g.checked=false;delete g.dataset.auto}}
@@ -573,9 +581,12 @@ function saveVenta(id,citaId){
   const s=$('#vS .on'),p=$('#vPg .on');
   if(p&&p.textContent==='Fiado'&&!cid){toast('Para fiar, elige o crea el cliente');return}
   const o={clienteId:cid,servicio:s?s.dataset.n:'Servicio',monto:+val('vM')||0,propina:+val('vP')||0,pago:p?p.textContent:'Efectivo',gratis:$('#vG').checked,fecha:val('vF')||today()};
-  if(id){Object.assign(db.ventas.find(x=>x.id===id),o)}
+  const mFiles=$('#vMedia')?[...$('#vMedia').files]:[];
+  if(mFiles.length&&!cid){toast('Para guardar la foto, elige o crea el cliente');return}
+  if(id){Object.assign(db.ventas.find(x=>x.id===id),o);if(mFiles.length)guardarMedia(mFiles,cid,id,o.fecha).then(n=>n&&toast(`📸 ${n} archivo(s) guardado(s)`))}
   else{
     var nueva={id:uid(),ts:Date.now(),...o};db.ventas.push(nueva);
+    if(mFiles.length)guardarMedia(mFiles,cid,nueva.id,o.fecha).then(n=>n&&toast(`📸 ${n} archivo(s) guardado(s) en la ficha`));
     db.inventario.forEach(i=>{if(+i.porCorte)i.stock=Math.max(0,+i.stock-+i.porCorte)});
     if(citaId){const c=db.citas.find(x=>x.id===citaId);if(c)c.estado='hecha'}
     mark('venta');
@@ -649,11 +660,16 @@ function verCliente(id){
     :(()=>{const hoy=V.filter(v=>v.tipo!=='producto'&&v.fecha===today()).sort((a,b)=>(b.ts||0)-(a.ts||0))[0];
       return `<div class="mut">Sin tarjeta todavía.</div>${hoy?`<button class="btn block mt" onclick="iniciarTarjeta('${id}',${+hoy.ts||0})">⭐ Iniciar con el corte de hoy</button>`:''}
       <button class="btn ${hoy?'sec ':''}block mt" onclick="iniciarTarjeta('${id}')">⭐ Iniciar desde el próximo corte</button>`})()}</div>
+  ${(()=>{const M=mediaDe(id);return `<div class="card"><div class="between"><h3 style="margin:0">📸 Fotos de sus cortes</h3><button class="btn sm sec" onclick="subirMediaCliente('${id}')">+ Subir</button></div>
+    ${M.length?`<div class="mt" onclick="verMedia('${M[0].id}')" style="cursor:pointer">${tagMedia(M[0],'ultimo')}<div class="mut mt">Último: ${fmtD(M[0].fecha)} · ¿Lo quiere igual?</div></div>
+      ${M.length>1?`<div class="gal mt">${M.slice(1).map(m=>`<div class="m" onclick="verMedia('${m.id}')">${tagMedia(m)}<span>${m.tipo==='video'?'▶ ':''}${fmtD(m.fecha).slice(4)}</span></div>`).join('')}</div>`:''}`
+    :'<div class="mut mt">Sin fotos todavía. Súbelas al registrar el corte o con “+ Subir”.</div>'}</div>`})()}
   ${c.notas?`<div class="card"><h3>Notas</h3>${esc(c.notas).replace(/\n/g,'<br>')}</div>`:''}
   ${prox?`<div class="card"><h3>Próxima cita</h3>${fmtD(prox.fecha)} · ${prox.hora}</div>`:''}
   <div class="grid2"><button class="btn wa" onclick="wa(${jsq(c.tel)},${jsq('Hola '+c.nombre+'! 💈')})">💬 WhatsApp</button><button class="btn" onclick="formCita(null,null,'${id}')">📅 Agendar</button>
   <button class="btn sec" onclick="formVenta(null,{clienteId:'${id}'})">✂️ Venta</button><button class="btn sec" onclick="formCliente('${id}')">✏️ Editar</button></div>
-  ${V.length?`<div class="card mt"><h3>Historial</h3>${V.slice(0,15).map(v=>`<div class="between mt"><span>${fmtD(v.fecha)} · ${esc(v.servicio)}</span><b>${money(ventaTotal(v))}</b></div>`).join('')}</div>`:''}`);
+  ${V.length?`<div class="card mt"><h3>Historial</h3>${V.slice(0,15).map(v=>{const mv=db.media.find(m=>m.ventaId===v.id);return `<div class="between mt" ${mv?`onclick="verMedia('${mv.id}')" style="cursor:pointer"`:''}><span>${fmtD(v.fecha)} · ${esc(v.servicio)}${mv?' 📸':''}</span><b>${money(ventaTotal(v))}</b></div>`}).join('')}</div>`:''}`);
+  pintarMedia($('#sheet'));
 }
 
 /* --- Cita --- */
@@ -761,7 +777,8 @@ function saveServ(i){const o={n:val('sN'),p:+val('sP')||0};if(!o.n)return;if(i!=
 
 function delItem(col,id){if(!confirm('¿Eliminar? No se puede deshacer.'))return;
   db[col]=db[col].filter(x=>x.id!==id);
-  if(col==='clientes'){db.citas=db.citas.filter(c=>c.clienteId!==id)}
+  if(col==='clientes'){db.citas=db.citas.filter(c=>c.clienteId!==id);
+    db.media.filter(m=>m.clienteId===id).forEach(m=>idbDo('readwrite',st=>st.delete(m.id)).catch(()=>{}));db.media=db.media.filter(m=>m.clienteId!==id)}
   save();closeSheet();render();toast('Eliminado')}
 
 /* --- WhatsApp acciones --- */
@@ -786,6 +803,43 @@ function savePremios(){const P=[...document.querySelectorAll('.prF')].map(f=>({n
   db.cfg.premios=P;db.cfg.sellos=meta();save();closeSheet();render();toast('✅ Premios guardados')}
 function saveMsgs(){db.cfg.msgVuelta=val('m1');db.cfg.msgCumple=val('m2');db.cfg.msgRecordatorio=val('m3');db.cfg.msgSello=val('m4');db.cfg.msgFiado=val('m7')||db.cfg.msgFiado;
   db.cfg.diasInactivo=Math.max(1,+val('m5')||14);save();render();toast('✅ Guardado')}
+
+/* ====================== FOTOS Y VIDEOS DEL CLIENTE ======================
+   Los archivos se guardan en IndexedDB del teléfono (aguanta videos). En db.media solo va la ficha liviana:
+   {id, clienteId, ventaId, fecha, tipo:'foto'|'video'}. No entran en el respaldo JSON. */
+const IDB=new Promise((ok,ko)=>{const r=indexedDB.open('kingbarber-media',1);
+  r.onupgradeneeded=()=>r.result.createObjectStore('media');r.onsuccess=()=>ok(r.result);r.onerror=()=>ko(r.error)});
+async function idbDo(mode,fn){const d=await IDB;return new Promise((ok,ko)=>{const tx=d.transaction('media',mode);const st=tx.objectStore('media');const q=fn(st);
+  tx.oncomplete=()=>ok(q&&q.result);tx.onerror=()=>ko(tx.error)})}
+const _urls={};
+async function mediaURL(id){if(_urls[id])return _urls[id];const b=await idbDo('readonly',st=>st.get(id));if(!b)return null;return _urls[id]=URL.createObjectURL(b)}
+function comprimir(file){return new Promise(ok=>{const img=new Image();const u=URL.createObjectURL(file);
+  img.onload=()=>{const k=Math.min(1,1280/Math.max(img.width,img.height));const c=document.createElement('canvas');c.width=img.width*k;c.height=img.height*k;
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(u);c.toBlob(b=>ok(b||file),'image/jpeg',.75)};
+  img.onerror=()=>ok(file);img.src=u})}
+async function guardarMedia(files,clienteId,ventaId,fecha){let n=0;
+  for(const f of files){const video=f.type.startsWith('video');
+    if(video&&f.size>80*1024*1024){toast('⚠️ Video muy pesado (máx. 80 MB). Grábalo más corto.');continue}
+    const blob=video?f:await comprimir(f);const id=uid();
+    try{await idbDo('readwrite',st=>st.put(blob,id))}catch(e){toast('⚠️ No hay espacio para guardar el archivo');continue}
+    db.media.push({id,clienteId,ventaId:ventaId||'',fecha:fecha||today(),tipo:video?'video':'foto'});n++}
+  save();return n}
+const mediaDe=cid=>db.media.filter(m=>m.clienteId===cid).sort((a,b)=>b.fecha.localeCompare(a.fecha)||(b.id>a.id?1:-1));
+async function pintarMedia(root){for(const el of (root||document).querySelectorAll('[data-mid]')){const u=await mediaURL(el.dataset.mid);if(u)el.src=u}}
+const tagMedia=(m,cls)=>m.tipo==='video'?`<video data-mid="${m.id}" class="${cls||''}" muted playsinline preload="metadata"></video>`:`<img data-mid="${m.id}" class="${cls||''}" alt="">`;
+async function verMedia(id){const m=db.media.find(x=>x.id===id);if(!m)return;const u=await mediaURL(id);
+  openSheet(`<h2 class="goldtxt">${esc((cli(m.clienteId)||{}).nombre||'')}</h2><div class="mut" style="margin-bottom:8px">${fmtD(m.fecha)}${m.ventaId?' · '+esc((db.ventas.find(v=>v.id===m.ventaId)||{}).servicio||''):''}</div>
+  ${m.tipo==='video'?`<video src="${u}" controls playsinline autoplay class="ultimo" style="max-height:70vh"></video>`:`<img src="${u}" class="ultimo" style="max-height:70vh;object-fit:contain">`}
+  <div class="grid2 mt"><button class="btn sec" onclick="verCliente('${m.clienteId}')">← Volver</button><button class="btn del" style="margin:0" onclick="borrarMedia('${id}')">🗑️ Eliminar</button></div>`)}
+async function borrarMedia(id){if(!confirm('¿Eliminar esta foto/video?'))return;const m=db.media.find(x=>x.id===id);
+  try{await idbDo('readwrite',st=>st.delete(id))}catch(e){}
+  db.media=db.media.filter(x=>x.id!==id);save();if(m)verCliente(m.clienteId);else closeSheet();toast('Eliminado')}
+function subirMediaCliente(cid){const i=document.createElement('input');i.type='file';i.accept='image/*,video/*';i.multiple=true;
+  i.onchange=async()=>{if(!i.files.length)return;toast('Guardando…');const n=await guardarMedia([...i.files],cid,'',today());if(n)toast(`📸 ${n} archivo(s) guardado(s)`);verCliente(cid)};i.click()}
+/* Muestra el último corte (foto/video) del cliente elegido en el formulario de venta. */
+async function ultimoCorteVenta(){const e=$('#vUlt');if(!e)return;const c=val('vC');const m=c&&mediaDe(c)[0];
+  if(!m){e.innerHTML='';return}
+  e.innerHTML=`<div class="card mt" style="margin-bottom:0" onclick="verMedia('${m.id}')"><div class="between"><h3 style="margin:0">📸 Último corte</h3><span class="mut">${fmtD(m.fecha)}</span></div><div class="mt">${tagMedia(m,'ultimo')}</div><div class="mut mt">¿Lo quiere igual?</div></div>`;pintarMedia(e)}
 
 /* ====================== FIADO ====================== */
 function waFiado(id){const c=cli(id);wa(c.tel,fill(db.cfg.msgFiado,{nombre:c.nombre.split(' ')[0],monto:money(deuda(id))}))}
