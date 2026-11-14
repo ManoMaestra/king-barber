@@ -144,7 +144,7 @@ textarea{min-height:90px;resize:vertical}
 /* ====================== DATOS ====================== */
 const KEY='kingbarber_v1';
 const DEF={
-  clientes:[], ventas:[], gastos:[], citas:[], fotos:[], actividad:{},
+  clientes:[], ventas:[], gastos:[], citas:[], fotos:[], actividad:{}, productos:[],
   trivia:{cur:null,usadas:[],ok:0,mal:0,dia:null,res:null},
   servicios:[{n:'Corte',p:10000},{n:'Corte + Barba',p:14000},{n:'Barba',p:6000},{n:'Corte niño',p:8000},{n:'Diseño / Líneas',p:3000}],
   inventario:[
@@ -164,6 +164,12 @@ try{db=JSON.parse(localStorage.getItem(KEY))}catch(e){db=null}
 if(!db){db=JSON.parse(JSON.stringify(DEF))}
 for(const k in DEF){if(db[k]===undefined)db[k]=JSON.parse(JSON.stringify(DEF[k]))}
 for(const k in DEF.cfg){if(db.cfg[k]===undefined)db.cfg[k]=DEF.cfg[k]}
+/* Migración: perfumes y ceras cargados como ventas pasan a la Tienda. */
+function migrar(){
+  if(!db.productos)db.productos=[];
+  if(!db.cfg.migTienda){db.ventas.forEach(v=>{if(!v.tipo&&/perfume|cera/i.test(v.servicio||'')){v.tipo='producto';v.cant=1;v.costo=0;v.unit=+v.monto||0}});db.cfg.migTienda=1}
+}
+migrar();
 function save(){
   try{localStorage.setItem(KEY,JSON.stringify(db))}
   catch(e){toast('⚠️ Memoria llena: borra fotos antiguas o exporta respaldo')}
@@ -193,7 +199,7 @@ function wa(tel,msg){
   window.open(`https://wa.me/${p}?text=${encodeURIComponent(msg)}`,'_blank');return true}
 function fill(t,o){return t.replace(/\{(\w+)\}/g,(m,k)=>o[k]??m)}
 function lastVisit(id){let m=null;for(const v of db.ventas)if(v.clienteId===id&&(!m||v.fecha>m))m=v.fecha;return m}
-function visits(id){return db.ventas.filter(v=>v.clienteId===id).length}
+function visits(id){return db.ventas.filter(v=>v.clienteId===id&&v.tipo!=='producto').length}
 function mark(tipo){db.actividad[today()]=db.actividad[today()]||[];if(!db.actividad[today()].includes(tipo))db.actividad[today()].push(tipo)}
 // La racha avanza con cualquier registro del día (venta, gasto, cita) o con la pregunta del día bien respondida.
 const okDay=d=>Array.isArray(db.actividad[d])&&db.actividad[d].some(t=>['venta','gasto','cita','trivia'].includes(t));
@@ -207,6 +213,20 @@ function bestStreak(){
   for(const k of ks){c=(prev&&diffDays(prev,k)===1)?c+1:1;b=Math.max(b,c);prev=k}return b}
 function monthSum(arr,ym,f){return arr.filter(x=>x.fecha.startsWith(ym)).reduce((s,x)=>s+f(x),0)}
 const ventaTotal=v=>(v.gratis?0:+v.monto||0)+(+v.propina||0);
+const pn=p=>p?(p.n+(p.det?' '+p.det:'')):'Producto';
+const prod=id=>db.productos.find(p=>p.id===id);
+/* Resumen de un período (pre = 'YYYY-MM' o 'YYYY'). Barbería: ventas de servicios − costos del negocio.
+   Tienda: ventas de productos − costo de lo vendido − otros gastos de tienda (las compras de mercadería se informan aparte). */
+function resumenMes(pre){
+  const V=db.ventas.filter(v=>v.fecha.startsWith(pre)),G=db.gastos.filter(g=>g.fecha.startsWith(pre));
+  const VB=V.filter(v=>v.tipo!=='producto'),VT=V.filter(v=>v.tipo==='producto');
+  const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
+  const b={ing:sum(VB,ventaTotal),cos:sum(G.filter(g=>g.tipo==='negocio'),g=>g.monto),n:VB.length};b.util=b.ing-b.cos;
+  const GT=G.filter(g=>g.tipo==='tienda');
+  const t={ing:sum(VT,ventaTotal),cogs:sum(VT,v=>v.costo),otros:sum(GT.filter(g=>g.cat!=='Mercadería'),g=>g.monto),
+    compras:sum(GT.filter(g=>g.cat==='Mercadería'),g=>g.monto),n:sum(VT,v=>v.cant||1)};t.util=t.ing-t.cogs-t.otros;
+  const per=sum(G.filter(g=>g.tipo==='personal'),g=>g.monto);
+  return {b,t,per,ing:b.ing+t.ing,util:b.util+t.util,V,VB,VT,G}}
 
 /* ====================== NAV ====================== */
 const ICON={
@@ -237,13 +257,12 @@ VIEWS.inicio=()=>{
   const t=today(),ym=t.slice(0,7);
   const vHoy=db.ventas.filter(v=>v.fecha===t);
   const ingHoy=vHoy.reduce((s,v)=>s+ventaTotal(v),0);
-  const ingMes=monthSum(db.ventas,ym,ventaTotal);
-  const gasMes=monthSum(db.gastos.filter(g=>g.tipo==='negocio'),ym,g=>+g.monto);
+  const RM=resumenMes(ym);const ingMes=RM.ing;const gasMes=RM.ing-RM.util;
   const perMes=monthSum(db.gastos.filter(g=>g.tipo==='personal'),ym,g=>+g.monto);
   const citasHoy=db.citas.filter(c=>c.fecha===t).sort((a,b)=>a.hora.localeCompare(b.hora));
   const s=streak(),hecho=okDay(t);
   const dias=[];for(let i=6;i>=0;i--){const d=addDays(t,-i);dias.push(`<div><i class="${okDay(d)?'on':''}">${okDay(d)?'✓':''}</i>${DIA[parseD(d).getDay()]}</div>`)}
-  const bajos=db.inventario.filter(i=>+i.stock<=+i.min);
+  const bajos=[...db.inventario,...db.productos.map(x=>({...x,n:pn(x)}))].filter(i=>+i.stock<=+i.min);
   const p=pendientesWA();
   const nav=db.inventario.find(i=>i.id==='navajas');
   return `
@@ -255,8 +274,8 @@ VIEWS.inicio=()=>{
     ${triviaCard(hecho)}
   </div>
   <div class="grid2" style="margin-bottom:12px">
-    <div class="kpi big"><div class="l">Utilidad del mes (negocio)</div><div class="v ${ingMes-gasMes>=0?'goldtxt':'neg'}">${money(ingMes-gasMes)}</div></div>
-    <div class="kpi"><div class="l">Hoy</div><div class="v">${money(ingHoy)}</div><div class="mut">${vHoy.length} servicio${vHoy.length===1?'':'s'}</div></div>
+    <div class="kpi big"><div class="l">Utilidad del mes</div><div class="v ${ingMes-gasMes>=0?'goldtxt':'neg'}">${money(ingMes-gasMes)}</div></div>
+    <div class="kpi"><div class="l">Hoy</div><div class="v">${money(ingHoy)}</div><div class="mut">${vHoy.length} venta${vHoy.length===1?'':'s'}</div></div>
     <div class="kpi"><div class="l">Ventas mes</div><div class="v pos">${money(ingMes)}</div></div>
     <div class="kpi"><div class="l">Costos mes</div><div class="v neg">${money(gasMes)}</div></div>
     <div class="kpi"><div class="l">Gastos personales</div><div class="v">${money(perMes)}</div></div>
@@ -363,33 +382,55 @@ VIEWS.finanzas=()=>{
   const byCat=arr=>{const o={};arr.forEach(g=>o[g.cat]=(o[g.cat]||0)+ +g.monto);const tot=arr.reduce((s,g)=>s+ +g.monto,0)||1;
     return Object.entries(o).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="mt"><div class="between"><span>${esc(k)}</span><b>${money(v)}</b></div><div class="bar mt"><i style="width:${v/tot*100}%"></i></div></div>`).join('')};
   if(tab==='resumen'){
-    const pago={};V.forEach(v=>pago[v.pago]=(pago[v.pago]||0)+ventaTotal(v));
-    const serv={};V.forEach(v=>serv[v.servicio]=(serv[v.servicio]||0)+1);
-    const prop=V.reduce((s,v)=>s+(+v.propina||0),0);
-    const top=Object.entries(db.clientes.reduce((o,c)=>{o[c.nombre]=V.filter(v=>v.clienteId===c.id).reduce((s,v)=>s+ventaTotal(v),0);return o},{})).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]).slice(0,5);
-    body=`${mesSel}<div class="grid2" style="margin-bottom:12px">
-    <div class="kpi big"><div class="l">Utilidad negocio</div><div class="v ${ing-cos>=0?'goldtxt':'neg'}">${money(ing-cos)}</div></div>
-    <div class="kpi"><div class="l">Ventas</div><div class="v pos">${money(ing)}</div><div class="mut">${V.length} servicios</div></div>
-    <div class="kpi"><div class="l">Costos</div><div class="v neg">${money(cos)}</div></div>
-    <div class="kpi"><div class="l">Propinas</div><div class="v">${money(prop)}</div></div>
-    <div class="kpi"><div class="l">Ticket prom.</div><div class="v">${money(V.length?ing/V.length:0)}</div></div>
-    <div class="kpi big" style="border-color:var(--line);background:var(--card2)"><div class="l">Te queda tras gastos personales</div><div class="v ${ing-cos-per>=0?'pos':'neg'}">${money(ing-cos-per)}</div><div class="mut">Personales: ${money(per)}</div></div></div>
+    const R=resumenMes(ym);
+    const pago={};R.V.forEach(v=>pago[v.pago]=(pago[v.pago]||0)+ventaTotal(v));
+    const serv={};R.VB.forEach(v=>serv[v.servicio]=(serv[v.servicio]||0)+1);
+    const pv={};R.VT.forEach(v=>{const pp=prod(v.productoId);const k=pp?pn(pp):(String(v.servicio||'Producto').replace(/ ×\d+$/,''));pv[k]=pv[k]||{u:0,g:0};pv[k].u+=(+v.cant||1);pv[k].g+=ventaTotal(v)-(+v.costo||0)});
+    const prop=R.V.reduce((s,v)=>s+(+v.propina||0),0);
+    const stC=db.productos.reduce((s,x)=>s+x.stock*(+x.costo||0),0),stP=db.productos.reduce((s,x)=>s+x.stock*(+x.precio||0),0);
+    const top=Object.entries(db.clientes.reduce((o,c)=>{o[c.nombre]=R.V.filter(v=>v.clienteId===c.id).reduce((s,v)=>s+ventaTotal(v),0);return o},{})).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]).slice(0,5);
+    const ln=(l,v,c)=>`<div class="between mt"><span class="mut" style="font-size:13px">${l}</span><b class="${c||''}">${v}</b></div>`;
+    body=`${mesSel}
+    <button class="btn sec block" style="margin-bottom:12px" onclick="menuExport()">📊 Exportar a Excel</button>
+    <div class="grid2" style="margin-bottom:12px">
+    <div class="kpi big"><div class="l">Utilidad total del mes</div><div class="v ${R.util>=0?'goldtxt':'neg'}">${money(R.util)}</div><div class="mut">Barbería ${money(R.b.util)} · Tienda ${money(R.t.util)}</div></div></div>
+    <div class="card"><h3>✂️ Barbería</h3>${ln('Ventas ('+R.b.n+' servicios)',money(R.b.ing),'pos')}${ln('Costos',money(R.b.cos),'neg')}${ln('Propinas',money(prop))}${ln('Ticket promedio',money(R.b.n?R.b.ing/R.b.n:0))}
+      <div class="between mt" style="border-top:1px solid var(--line);padding-top:8px"><b>Utilidad</b><b class="${R.b.util>=0?'goldtxt':'neg'}">${money(R.b.util)}</b></div></div>
+    <div class="card"><h3>👕 Tienda</h3>${ln('Ventas ('+R.t.n+' unidades)',money(R.t.ing),'pos')}${ln('Costo de lo vendido',money(R.t.cogs),'neg')}${R.t.otros?ln('Otros gastos tienda',money(R.t.otros),'neg'):''}
+      <div class="between mt" style="border-top:1px solid var(--line);padding-top:8px"><b>Ganancia</b><b class="${R.t.util>=0?'goldtxt':'neg'}">${money(R.t.util)}</b></div>
+      ${ln('Invertido en mercadería este mes',money(R.t.compras))}${ln('Stock sin vender (a costo)',money(stC))}${ln('Stock sin vender (a precio venta)',money(stP))}</div>
+    <div class="kpi big" style="border-color:var(--line);background:var(--card2);margin-bottom:12px"><div class="l">Te queda tras gastos personales</div><div class="v ${R.util-R.per>=0?'pos':'neg'}">${money(R.util-R.per)}</div><div class="mut">Personales: ${money(R.per)}</div></div>
     <div class="card"><h3>Por medio de pago</h3>${Object.keys(pago).length?Object.entries(pago).map(([k,v])=>`<div class="between mt"><span>${esc(k)}</span><b>${money(v)}</b></div>`).join(''):'<div class="empty">Sin ventas</div>'}</div>
     <div class="card"><h3>Servicios más vendidos</h3>${Object.keys(serv).length?Object.entries(serv).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="between mt"><span>${esc(k)}</span><b>${v}</b></div>`).join(''):'<div class="empty">—</div>'}</div>
+    <div class="card"><h3>Productos más vendidos</h3>${Object.keys(pv).length?Object.entries(pv).sort((a,b)=>b[1].g-a[1].g).map(([k,v])=>`<div class="between mt"><span>${esc(k)} <span class="mut">×${v.u}</span></span><b>${money(v.g)} <span class="mut">ganancia</span></b></div>`).join(''):'<div class="empty">—</div>'}</div>
     <div class="card"><h3>👑 Mejores clientes</h3>${top.length?top.map(([k,v],i)=>`<div class="between mt"><span>${i+1}. ${esc(k)}</span><b>${money(v)}</b></div>`).join(''):'<div class="empty">—</div>'}</div>`;
   }else if(tab==='ventas'){
-    body=`${mesSel}<button class="btn block" onclick="formVenta()" style="margin-bottom:12px">✂️ Nueva venta</button>
+    body=`${mesSel}<div class="grid2" style="margin-bottom:12px"><button class="btn" onclick="formVenta()">✂️ Servicio</button><button class="btn sec" onclick="formVentaProd()">👕 Producto</button></div>
     <div class="card"><div class="between"><h3 style="margin:0">Total</h3><b class="pos">${money(ing)}</b></div>${V.length?V.map(v=>`<div class="row" onclick="formVenta('${v.id}')"><div class="main"><b>${esc((cli(v.clienteId)||{}).nombre||'Sin cliente')}</b><span>${fmtD(v.fecha)} · ${esc(v.servicio)} · ${esc(v.pago)}${v.gratis?' · 🎁 gratis':''}</span></div><b class="pos">${money(ventaTotal(v))}</b></div>`).join(''):'<div class="empty">Sin ventas este mes</div>'}</div>`;
   }else if(tab==='costos'||tab==='personal'){
     const tipo=tab==='costos'?'negocio':'personal';const L=tipo==='negocio'?GN:GP;const tot=tipo==='negocio'?cos:per;
     body=`${mesSel}<button class="btn block" onclick="formGasto('${tipo}')" style="margin-bottom:12px">+ ${tipo==='negocio'?'Costo del negocio':'Gasto personal'}</button>
     <div class="card"><div class="between"><h3 style="margin:0">Total</h3><b class="neg">${money(tot)}</b></div>${byCat(L)}</div>
-    <div class="card">${L.length?L.map(gRow).join(''):'<div class="empty">Sin registros</div>'}</div>`;
+    <div class="card">${L.length?L.map(gRow).join(''):'<div class="empty">Sin registros</div>'}</div>
+    ${tipo==='negocio'?(()=>{const GT=G.filter(g=>g.tipo==='tienda');return `<div class="card"><div class="between"><h3 style="margin:0">👕 Compras y gastos de la tienda</h3><b class="neg">${money(GT.reduce((s,g)=>s+ +g.monto,0))}</b></div>
+      ${GT.length?GT.map(gRow).join(''):'<div class="empty">Sin compras este mes</div>'}<button class="btn sec block mt" onclick="formGasto('tienda')">+ Gasto de tienda</button></div>`})():''}`;
   }else if(tab==='inventario'){
-    body=`<button class="btn block" onclick="formInv()" style="margin-bottom:12px">+ Producto</button>
+    const it=sub.inv||'tienda';
+    const itabs=`<div class="tabs"><div class="tab ${it==='tienda'?'on':''}" onclick="sub.inv='tienda';render()">👕 Tienda</div><div class="tab ${it==='insumos'?'on':''}" onclick="sub.inv='insumos';render()">🪒 Insumos barbería</div></div>`;
+    if(it==='insumos'){
+    body=`${itabs}<button class="btn block" onclick="formInv()" style="margin-bottom:12px">+ Insumo</button>
     <div class="card">${db.inventario.map(i=>{const low=+i.stock<=+i.min;return `<div class="row"><div class="main" onclick="formInv('${i.id}')"><b>${i.id==='navajas'?'🪒 ':''}${esc(i.n)} ${low?'<span class="pill red">Bajo</span>':''}</b><span>Mínimo ${i.min} ${esc(i.u)}${+i.porCorte?` · descuenta ${i.porCorte} por servicio`:''}</span></div>
     <div class="flex"><button class="btn sm sec" onclick="ajStock('${i.id}',-1)">−</button><b style="min-width:40px;text-align:center" class="${low?'neg':''}">${i.stock}</b><button class="btn sm sec" onclick="ajStock('${i.id}',1)">+</button></div></div>`}).join('')}</div>
-    <div class="mut">Toca un producto para editarlo o sumar una caja completa (ej: +200 navajas).</div>`;
+    <div class="mut">Insumos que se gastan al atender. Toca uno para editarlo o sumar una caja completa (ej: +200 navajas).</div>`;
+    }else{
+    const P=[...db.productos].sort((a,b)=>pn(a).localeCompare(pn(b)));
+    const stC=P.reduce((s,x)=>s+x.stock*(+x.costo||0),0),stP=P.reduce((s,x)=>s+x.stock*(+x.precio||0),0);
+    body=`${itabs}<div class="grid2" style="margin-bottom:12px"><button class="btn" onclick="formLlego()">📦 Llegó mercadería</button><button class="btn sec" onclick="formProd()">+ Producto</button></div>
+    <div class="grid2" style="margin-bottom:12px"><div class="kpi"><div class="l">Stock a costo</div><div class="v">${money(stC)}</div></div><div class="kpi"><div class="l">Stock a precio venta</div><div class="v pos">${money(stP)}</div></div></div>
+    <div class="card">${P.length?P.map(x=>{const low=+x.stock<=+x.min;const mg=(+x.precio||0)-(+x.costo||0);return `<div class="row"><div class="main" onclick="formProd('${x.id}')"><b>${esc(pn(x))} ${low?'<span class="pill red">Bajo</span>':''}</b><span>Costo ${money(x.costo)} · Venta ${money(x.precio)} · Gana ${money(mg)}</span></div>
+    <div class="flex"><button class="btn sm sec" onclick="ajProd('${x.id}',-1)">−</button><b style="min-width:34px;text-align:center" class="${low?'neg':''}">${x.stock}</b><button class="btn sm sec" onclick="ajProd('${x.id}',1)">+</button></div></div>`}).join(''):'<div class="empty">Sin productos. Toca “📦 Llegó mercadería” para cargar gorras, polerones, etc.</div>'}</div>
+    <div class="mut">Los botones − y + solo corrigen el conteo. Para una compra usa “Llegó mercadería” o toca el producto › Sumar compra, así queda registrado lo que pagaste.</div>`;
+    }
   }else{
     const kb=Math.round(new Blob([JSON.stringify(db)]).size/1024);
     body=`<div class="card"><h3>Servicios y precios</h3>${db.servicios.map((s,i)=>`<div class="row"><div class="main"><b>${esc(s.n)}</b></div><b>${money(s.p)}</b><button class="btn sm sec" onclick="formServ(${i})">Editar</button></div>`).join('')}<button class="btn sec block mt" onclick="formServ()">+ Servicio</button></div>
@@ -416,7 +457,9 @@ function val(id){const e=document.getElementById(id);return e?e.value.trim():''}
 function cliOptions(sel){return `<option value="">— Sin cliente / nuevo —</option>`+[...db.clientes].sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${esc(c.nombre)}</option>`).join('')}
 
 function quickMenu(){openSheet(`<h2 class="goldtxt">¿Qué registras?</h2><div class="quick">
-  <button onclick="formVenta()"><span>✂️</span>Venta</button>
+  <button onclick="formVenta()"><span>✂️</span>Venta servicio</button>
+  <button onclick="formVentaProd()"><span>👕</span>Venta producto</button>
+  <button onclick="formLlego()"><span>📦</span>Llegó mercadería</button>
   <button onclick="formCita()"><span>📅</span>Cita</button>
   <button onclick="formGasto('negocio')"><span>🧾</span>Costo negocio</button>
   <button onclick="formGasto('personal')"><span>👛</span>Gasto personal</button>
@@ -425,9 +468,11 @@ function quickMenu(){openSheet(`<h2 class="goldtxt">¿Qué registras?</h2><div c
 
 /* --- Venta --- */
 function formVenta(id,pre){
+  if(id){const x=db.ventas.find(y=>y.id===id);if(x&&x.tipo==='producto')return formVentaProd(id)}
   const v=id?db.ventas.find(x=>x.id===id):{fecha:today(),pago:'Efectivo',propina:0,...(pre||{})};
   const sv=v.servicio||db.servicios[0]?.n;
   openSheet(`<h2 class="goldtxt">${id?'Editar venta':'Nueva venta'}</h2>
+  ${id?'':`<div class="tabs"><div class="tab on">✂️ Servicio</div><div class="tab" onclick="formVentaProd(null,{clienteId:val('vC')})">👕 Producto</div></div>`}
   <label>Cliente</label><select id="vC" onchange="chkGratis()">${cliOptions(v.clienteId)}</select>
   <div id="vNew" style="${v.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="vN" placeholder="Opcional"></div><div><label>WhatsApp</label><input id="vT" inputmode="tel" placeholder="9 1234 5678"></div></div></div>
   <div id="vGr"></div>
@@ -472,10 +517,12 @@ function saveVenta(id,citaId){
 
 /* --- Gasto --- */
 const CATS={negocio:['Productos','Navajas','Arriendo','Luz/Agua','Internet','Equipos','Publicidad','Otros'],
-  personal:['Comida','Supermercado','Transporte','Arriendo casa','Cuentas','Salud','Ocio','Ropa','Deudas','Otros']};
+  personal:['Comida','Supermercado','Transporte','Arriendo casa','Cuentas','Salud','Ocio','Ropa','Deudas','Otros'],
+  tienda:['Mercadería','Envío','Bolsas/Etiquetas','Publicidad','Otros']};
 function formGasto(tipo,id){
   const g=id?db.gastos.find(x=>x.id===id):{fecha:today(),cat:CATS[tipo][0]};
-  openSheet(`<h2 class="goldtxt">${tipo==='negocio'?'Costo del negocio':'Gasto personal'}</h2>
+  openSheet(`<h2 class="goldtxt">${{negocio:'Costo del negocio',personal:'Gasto personal',tienda:'Gasto de la tienda'}[tipo]}</h2>
+  ${g.productoId?'<div class="mut">Compra de mercadería. Si la eliminas, el stock no se descuenta solo: corrígelo en Inventario.</div>':''}
   <label>Monto</label><input id="gM" type="number" inputmode="numeric" value="${g.monto||''}" placeholder="$">
   <label>Categoría</label><div class="chips" id="gC">${CATS[tipo].map(c=>`<div class="chip ${c===g.cat?'on':''}" onclick="[...this.parentNode.children].forEach(x=>x.classList.remove('on'));this.classList.add('on')">${c}</div>`).join('')}</div>
   <label>Detalle</label><input id="gD" value="${esc(g.desc||'')}" placeholder="Opcional">
@@ -641,6 +688,150 @@ function waSello(id){const c=cli(id);const n=visits(id);const m=db.cfg.sellos;co
 function saveMsgs(){db.cfg.msgVuelta=val('m1');db.cfg.msgCumple=val('m2');db.cfg.msgRecordatorio=val('m3');db.cfg.msgSello=val('m4');
   db.cfg.diasInactivo=Math.max(1,+val('m5')||14);db.cfg.sellos=Math.max(2,+val('m6')||10);save();render();toast('✅ Guardado')}
 
+/* ====================== TIENDA ====================== */
+function regCompra(p,cant,cu){ // registra lo pagado como gasto de la tienda
+  if(cant>0&&cu>0)db.gastos.push({id:uid(),tipo:'tienda',monto:cant*cu,cat:'Mercadería',desc:`Compra: ${pn(p)} ×${cant}`,fecha:today(),productoId:p.id})}
+function ajProd(id,n){const p=prod(id);p.stock=Math.max(0,+p.stock+n);save();render()}
+
+function formVentaProd(id,pre){
+  const v=id?db.ventas.find(x=>x.id===id):{fecha:today(),pago:'Efectivo',cant:1,...(pre||{})};
+  const P=[...db.productos].sort((a,b)=>pn(a).localeCompare(pn(b)));
+  if(!P.length&&!id){openSheet(`<h2 class="goldtxt">Venta de producto</h2><div class="empty">Aún no hay productos en la tienda.</div><button class="btn block" onclick="formLlego()">📦 Cargar mercadería</button>`);return}
+  openSheet(`<h2 class="goldtxt">${id?'Editar venta':'Nueva venta'}</h2>
+  ${id?'':`<div class="tabs"><div class="tab" onclick="formVenta(null,{clienteId:val('pC')})">✂️ Servicio</div><div class="tab on">👕 Producto</div></div>`}
+  <label>Producto</label><div class="chips" id="pS">${P.map(x=>{const disp=x.stock+(id&&v.productoId===x.id?+v.cant:0);
+    return `<div class="chip ${x.id===v.productoId?'on':''}" data-id="${x.id}" data-p="${+x.precio||0}" style="${disp<=0?'opacity:.35;pointer-events:none':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on');$('#pU').value=this.dataset.p;totProd()">${esc(pn(x))}<small>${money(x.precio)} · quedan ${disp}</small></div>`}).join('')}</div>
+  <div class="grid2"><div><label>Cantidad</label><input id="pQ" type="number" inputmode="numeric" min="1" value="${v.cant||1}" oninput="totProd()"></div>
+  <div><label>Precio c/u</label><input id="pU" type="number" inputmode="numeric" value="${v.unit??''}" oninput="totProd()"></div></div>
+  <div class="between mt"><span class="mut">Total</span><b id="pT" class="pos">$0</b></div>
+  <label>Cliente (opcional)</label><select id="pC">${cliOptions(v.clienteId)}</select>
+  <label>Pago</label><div class="chips" id="pPg">${['Efectivo','Transferencia','Tarjeta'].map(x=>`<div class="chip ${x===v.pago?'on':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${x}</div>`).join('')}</div>
+  <label>Fecha</label><input id="pF" type="date" value="${v.fecha}">
+  <button class="btn block mt" id="btnGuardar" data-txt="Guardar venta" onclick="saveVentaProd('${id||''}')">Guardar venta</button>
+  ${id?btnBorrar():''}`);
+  totProd();
+}
+function totProd(){const e=$('#pT');if(e)e.textContent=money((+val('pQ')||0)*(+val('pU')||0))}
+function saveVentaProd(id){
+  const old=id?db.ventas.find(x=>x.id===id):null;
+  if(old&&window._borrar){const p=prod(old.productoId);if(p)p.stock=+p.stock+(+old.cant||1);
+    db.ventas=db.ventas.filter(x=>x.id!==id);save();closeSheet();render();toast('🗑️ Venta eliminada, stock devuelto');return}
+  const ch=$('#pS .on');
+  if(!ch&&old&&!prod(old.productoId)){ // venta migrada o de un producto eliminado: se edita sin tocar stock
+    const cant=Math.max(1,Math.floor(+val('pQ')||1)),unit=+val('pU')||0,pg=$('#pPg .on'),cu=(+old.costo||0)/(+old.cant||1);
+    Object.assign(old,{servicio:String(old.servicio||'Producto').replace(/ ×\d+$/,'')+(cant>1?' ×'+cant:''),cant,unit,monto:unit*cant,costo:cu*cant,clienteId:val('pC'),pago:pg?pg.textContent:'Efectivo',fecha:val('pF')||old.fecha});
+    save();closeSheet();render();toast('✅ Venta guardada');return}
+  if(!ch){toast('Elige un producto');return}
+  const p=prod(ch.dataset.id);const cant=Math.max(1,Math.floor(+val('pQ')||1));const unit=+val('pU')||0;
+  const disp=+p.stock+(old&&old.productoId===p.id?+old.cant||1:0);
+  if(cant>disp){toast(`Solo quedan ${disp} de ${pn(p)}`);return}
+  if(old){const op=prod(old.productoId);if(op)op.stock=+op.stock+(+old.cant||1)}
+  p.stock=+p.stock-cant;
+  const pg=$('#pPg .on');
+  const o={tipo:'producto',productoId:p.id,cant,unit,monto:unit*cant,costo:(+p.costo||0)*cant,propina:0,gratis:false,
+    servicio:pn(p)+(cant>1?' ×'+cant:''),clienteId:val('pC'),pago:pg?pg.textContent:'Efectivo',fecha:val('pF')||today()};
+  if(old)Object.assign(old,o);else{db.ventas.push({id:uid(),ts:Date.now(),...o});mark('venta')}
+  save();closeSheet();render();
+  toast(+p.stock<=+p.min?`✅ Guardado · ⚠️ quedan ${p.stock} de ${pn(p)}`:'✅ Venta guardada');
+}
+
+function formProd(id){
+  const p=id?prod(id):{n:'',det:'',costo:'',precio:'',stock:'',min:2};
+  openSheet(`<h2 class="goldtxt">${id?esc(pn(p)):'Nuevo producto'}</h2>
+  ${id?`<div class="card"><h3>📦 Sumar compra</h3><div class="grid2"><div><label>Cantidad</label><input id="kA" type="number" inputmode="numeric" placeholder="10"></div><div><label>Pagaste c/u</label><input id="kC" type="number" inputmode="numeric" value="${p.costo||''}"></div></div>
+    <button class="btn block mt" onclick="compraProd('${id}')">Sumar al stock</button></div>`:''}
+  <label>Nombre</label><input id="kN" value="${esc(p.n)}" placeholder="Ej: Polerón negro">
+  <label>Talla / color (opcional)</label><input id="kD" value="${esc(p.det||'')}" placeholder="Ej: L">
+  <div class="grid2"><div><label>Costo c/u (lo que pagaste)</label><input id="kCo" type="number" inputmode="numeric" value="${p.costo}"></div>
+  <div><label>Precio de venta</label><input id="kP" type="number" inputmode="numeric" value="${p.precio}"></div></div>
+  <div class="grid2"><div><label>${id?'Stock actual':'Cantidad que llegó'}</label><input id="kS" type="number" inputmode="numeric" value="${p.stock}"></div>
+  <div><label>Avisar si quedan</label><input id="kM" type="number" inputmode="numeric" value="${p.min}"></div></div>
+  ${id?'':'<div class="mut mt">Lo que pagaste (cantidad × costo) queda registrado como compra de la tienda.</div>'}
+  <button class="btn block mt" onclick="saveProd('${id||''}')">Guardar</button>
+  ${id?`<button class="btn del block mt" onclick="delItem('productos','${id}')">Eliminar producto</button>`:''}`);
+}
+function saveProd(id){
+  const n=val('kN');if(!n){toast('Falta el nombre');return}
+  const o={n,det:val('kD'),costo:+val('kCo')||0,precio:+val('kP')||0,stock:Math.max(0,+val('kS')||0),min:+val('kM')||0};
+  if(id)Object.assign(prod(id),o);else{const p={id:uid(),...o};db.productos.push(p);regCompra(p,p.stock,p.costo);if(p.stock)mark('gasto')}
+  save();closeSheet();render();toast('✅ Producto guardado');
+}
+function compraProd(id){const p=prod(id);const cant=Math.floor(+val('kA')||0);if(cant<=0){toast('Ingresa la cantidad');return}
+  const cu=+val('kC')||+p.costo||0;p.stock=+p.stock+cant;p.costo=cu;regCompra(p,cant,cu);mark('gasto');
+  save();closeSheet();render();toast(`✅ +${cant} ${pn(p)}. Ahora hay ${p.stock}`)}
+
+/* Llegó mercadería: varias líneas de una vez, productos existentes o nuevos. */
+function formLlego(){
+  openSheet(`<h2 class="goldtxt">📦 Llegó mercadería</h2><div class="mut">Una línea por producto. Elige uno que ya tienes o crea uno nuevo.</div>
+  <div id="lineas"></div><button class="btn sec block mt" onclick="addLinea()">+ Otra línea</button>
+  <div class="between mt"><span class="mut">Total pagado</span><b id="lT">$0</b></div>
+  <button class="btn block mt" onclick="saveLlego()">Guardar todo</button>`);
+  addLinea();
+}
+function addLinea(){
+  const P=[...db.productos].sort((a,b)=>pn(a).localeCompare(pn(b)));
+  const d=document.createElement('div');d.className='card linea mt';d.style.marginBottom='0';
+  d.innerHTML=`<select class="lP" onchange="lineaCambio(this)"><option value="">➕ Producto nuevo</option>${P.map(x=>`<option value="${x.id}">${esc(pn(x))} (hay ${x.stock})</option>`).join('')}</select>
+  <div class="lNuevo"><div class="grid2"><div><label>Nombre</label><input class="lN" placeholder="Gorra negra"></div><div><label>Talla / color</label><input class="lD" placeholder="Opcional"></div></div></div>
+  <div class="grid3"><div><label>Cantidad</label><input class="lQ" type="number" inputmode="numeric" oninput="totLlego()"></div><div><label>Pagaste c/u</label><input class="lC" type="number" inputmode="numeric" oninput="totLlego()"></div><div><label>Venta c/u</label><input class="lV" type="number" inputmode="numeric"></div></div>`;
+  $('#lineas').appendChild(d);
+}
+function lineaCambio(sel){const d=sel.closest('.linea');const p=prod(sel.value);d.querySelector('.lNuevo').style.display=p?'none':'';
+  if(p){d.querySelector('.lC').value=p.costo||'';d.querySelector('.lV').value=p.precio||''}totLlego()}
+function totLlego(){let t=0;document.querySelectorAll('.linea').forEach(d=>t+=(+d.querySelector('.lQ').value||0)*(+d.querySelector('.lC').value||0));const e=$('#lT');if(e)e.textContent=money(t)}
+function saveLlego(){
+  const L=[...document.querySelectorAll('.linea')].map(d=>({pid:d.querySelector('.lP').value,n:d.querySelector('.lN').value.trim(),det:d.querySelector('.lD').value.trim(),
+    q:Math.floor(+d.querySelector('.lQ').value||0),c:+d.querySelector('.lC').value||0,v:+d.querySelector('.lV').value||0})).filter(l=>l.q>0&&(l.pid||l.n));
+  if(!L.length){toast('Completa al menos una línea con cantidad');return}
+  L.forEach(l=>{let p=prod(l.pid);
+    if(!p){p={id:uid(),n:l.n,det:l.det,costo:l.c,precio:l.v,stock:0,min:2};db.productos.push(p)}
+    else{if(l.c)p.costo=l.c;if(l.v)p.precio=l.v}
+    p.stock=+p.stock+l.q;regCompra(p,l.q,l.c)});
+  mark('gasto');save();closeSheet();sub.finanzas='inventario';sub.inv='tienda';if(cur!=='finanzas')cur='finanzas';render();
+  toast(`✅ ${L.reduce((s,l)=>s+l.q,0)} unidades cargadas`);
+}
+
+/* ====================== EXPORTAR A EXCEL ====================== */
+const _scripts={};
+function cargarScript(src){return _scripts[src]||(_scripts[src]=new Promise((ok,ko)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=()=>{delete _scripts[src];ko()};document.head.appendChild(s)}))}
+function menuExport(){const ym=sub.mes||today().slice(0,7);const[y,m]=ym.split('-').map(Number);
+  openSheet(`<h2 class="goldtxt">📊 Exportar a Excel</h2><div class="mut">Archivo con hojas de Resumen, Ventas, Gastos e Inventario. Ábrelo en Excel o Google Sheets.</div>
+  <button class="btn block mt" onclick="exportExcel('${ym}')">${MES[m-1].toUpperCase()} ${y}</button>
+  <button class="btn sec block mt" onclick="exportExcel('${y}')">Año ${y} completo</button>`)}
+async function exportExcel(pre){
+  toast('Preparando Excel…');
+  try{await cargarScript('https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js')}catch(e){toast('⚠️ Necesitas internet para exportar la primera vez');return}
+  const R=resumenMes(pre);const D=s=>parseD(s);
+  const tipoG={negocio:'Barbería',tienda:'Tienda',personal:'Personal'};
+  const ventas=[['Fecha','Negocio','Cliente','Detalle','Cantidad','Precio c/u','Total','Propina','Costo','Ganancia','Medio de pago','Gratis']]
+    .concat([...R.V].sort((a,b)=>a.fecha.localeCompare(b.fecha)).map(v=>{const t=v.tipo==='producto';const tot=v.gratis?0:+v.monto||0;
+      return [D(v.fecha),t?'Tienda':'Barbería',(cli(v.clienteId)||{}).nombre||'',v.servicio||'',t?+v.cant||1:1,t?+v.unit||tot:tot,tot,+v.propina||0,t?+v.costo||0:0,tot+(+v.propina||0)-(t?+v.costo||0:0),v.pago||'',v.gratis?'Sí':'']}));
+  const gastos=[['Fecha','Tipo','Categoría','Detalle','Monto']].concat([...R.G].sort((a,b)=>a.fecha.localeCompare(b.fecha)).map(g=>[D(g.fecha),tipoG[g.tipo]||g.tipo,g.cat||'',g.desc||'',+g.monto||0]));
+  const inv=[['Tipo','Producto','Stock','Avisar bajo','Costo c/u','Precio c/u','Valor a costo','Valor a precio venta']]
+    .concat(db.productos.map(p=>['Tienda',pn(p),+p.stock,+p.min,+p.costo||0,+p.precio||0,p.stock*(+p.costo||0),p.stock*(+p.precio||0)]))
+    .concat(db.inventario.map(i=>['Insumo barbería',i.n,+i.stock,+i.min,'','','','']));
+  const titulo=pre.length===4?`Año ${pre}`:`${MES[+pre.slice(5)-1].toUpperCase()} ${pre.slice(0,4)}`;
+  const res=[[`King Barber · ${titulo}`],[],['BARBERÍA',''],['Ventas servicios',R.b.ing],['Costos barbería',R.b.cos],['Utilidad barbería',R.b.util],[],
+    ['TIENDA',''],['Ventas productos',R.t.ing],['Costo de lo vendido',R.t.cogs],['Otros gastos tienda',R.t.otros],['Ganancia tienda',R.t.util],['Invertido en mercadería',R.t.compras],[],
+    ['UTILIDAD TOTAL',R.util],['Gastos personales',R.per],['Te queda',R.util-R.per]];
+  if(pre.length===4){res.push([],['MES','Ventas barbería','Utilidad barbería','Ventas tienda','Ganancia tienda','Utilidad total','Gastos personales','Te queda']);
+    for(let i=1;i<=12;i++){const r=resumenMes(`${pre}-${pad(i)}`);res.push([MES[i-1].toUpperCase(),r.b.ing,r.b.util,r.t.ing,r.t.util,r.util,r.per,r.util-r.per])}}
+  const wb=XLSX.utils.book_new();
+  const add=(rows,name,cols,moneyCols)=>{const ws=XLSX.utils.aoa_to_sheet(rows,{cellDates:true,dateNF:'dd-mm-yyyy'});ws['!cols']=cols.map(w=>({wch:w}));
+    const rg=XLSX.utils.decode_range(ws['!ref']);for(let r=1;r<=rg.e.r;r++)for(const c of moneyCols){const cell=ws[XLSX.utils.encode_cell({r,c})];if(cell&&cell.t==='n')cell.z='"$"#,##0'}
+    XLSX.utils.book_append_sheet(wb,ws,name)};
+  add(res,'Resumen',[28,16,18,16,16,16,18,14],[1,2,3,4,5,6,7]);
+  add(ventas,'Ventas',[12,10,20,28,9,12,12,10,10,12,14,7],[5,6,7,8,9]);
+  add(gastos,'Gastos',[12,10,16,32,12],[4]);
+  add(inv,'Inventario',[16,28,8,11,11,11,14,18],[4,5,6,7]);
+  const buf=XLSX.write(wb,{bookType:'xlsx',type:'array'});
+  const name=`KingBarber-${pre}.xlsx`;const type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const file=new File([buf],name,{type});
+  closeSheet();
+  if(navigator.canShare&&navigator.canShare({files:[file]})){navigator.share({files:[file],title:name}).catch(()=>{})}
+  else{const a=document.createElement('a');a.href=URL.createObjectURL(file);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000)}
+}
+
 /* --- Pregunta del día (racha) --- */
 const TRIVIA=[
 ['¿Cuánto es 15% de $20.000?',['$2.000','$3.000','$1.500','$3.500'],1],
@@ -721,8 +912,10 @@ function responder(i){const tv=db.trivia;if(tv.res)return;const a=TRIVIA[tv.cur]
   if(i===a){tv.ok++;mark('trivia');tv.cur=null;tv.res=null;save();render();const s=streak();toast(`✅ ¡Correcto! Racha de ${s} día${s>1?'s':''} 🔥`)}
   else{tv.mal++;tv.res='mal';tv.elegida=i;save();render();toast('❌ Casi. Prueba con otra')}}
 function elegirGasto(){openSheet(`<h2 class="goldtxt">¿Qué gasto?</h2><div class="quick">
-  <button onclick="formGasto('negocio')"><span>🧾</span>Costo negocio</button>
-  <button onclick="formGasto('personal')"><span>👛</span>Gasto personal</button></div>`)}
+  <button onclick="formGasto('negocio')"><span>🧾</span>Costo barbería</button>
+  <button onclick="formGasto('personal')"><span>👛</span>Gasto personal</button>
+  <button onclick="formLlego()"><span>📦</span>Llegó mercadería</button>
+  <button onclick="formGasto('tienda')"><span>👕</span>Otro gasto tienda</button></div>`)}
 
 /* --- Foto del día --- */
 function takePhoto(){closeSheet();$('#photoIn').click()}
@@ -741,7 +934,7 @@ function exportar(){db.cfg.ultBackup=today();save();
   else{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click()}render()}
 $('#importIn').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();
   r.onload=()=>{try{const d=JSON.parse(r.result);if(!d.clientes||!d.ventas)throw 0;if(!confirm('Esto reemplaza los datos actuales por el respaldo. ¿Seguir?'))return;
-    db=d;for(const k in DEF){if(db[k]===undefined)db[k]=JSON.parse(JSON.stringify(DEF[k]))}for(const k in DEF.cfg){if(db.cfg[k]===undefined)db.cfg[k]=DEF.cfg[k]}save();render();toast('✅ Respaldo cargado')}catch(x){toast('Archivo no válido')}};r.readAsText(f);e.target.value=''});
+    db=d;for(const k in DEF){if(db[k]===undefined)db[k]=JSON.parse(JSON.stringify(DEF[k]))}for(const k in DEF.cfg){if(db.cfg[k]===undefined)db.cfg[k]=DEF.cfg[k]}migrar();save();render();toast('✅ Respaldo cargado')}catch(x){toast('Archivo no válido')}};r.readAsText(f);e.target.value=''});
 function borrarTodo(){if(!confirm('¿Borrar TODOS los datos? No se puede deshacer.'))return;if(!confirm('¿Seguro? Exporta un respaldo antes.'))return;
   localStorage.removeItem(KEY);location.reload()}
 
