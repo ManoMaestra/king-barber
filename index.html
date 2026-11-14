@@ -195,8 +195,8 @@ function fill(t,o){return t.replace(/\{(\w+)\}/g,(m,k)=>o[k]??m)}
 function lastVisit(id){let m=null;for(const v of db.ventas)if(v.clienteId===id&&(!m||v.fecha>m))m=v.fecha;return m}
 function visits(id){return db.ventas.filter(v=>v.clienteId===id).length}
 function mark(tipo){db.actividad[today()]=db.actividad[today()]||[];if(!db.actividad[today()].includes(tipo))db.actividad[today()].push(tipo)}
-// La racha avanza solo con la pregunta del día respondida correctamente.
-const okDay=d=>Array.isArray(db.actividad[d])&&db.actividad[d].includes('trivia');
+// La racha avanza con cualquier registro del día (venta, gasto, cita) o con la pregunta del día bien respondida.
+const okDay=d=>Array.isArray(db.actividad[d])&&db.actividad[d].some(t=>['venta','gasto','cita','trivia'].includes(t));
 function streak(){
   let n=0,d=today();
   if(!okDay(d))d=addDays(d,-1);
@@ -247,12 +247,12 @@ VIEWS.inicio=()=>{
   const p=pendientesWA();
   const nav=db.inventario.find(i=>i.id==='navajas');
   return `
-  <div class="hero"><div><b>${hecho?'✅ Pregunta del día lograda':'⚡ Responde la pregunta del día'}</b><p>${s>0?`🔥 ${s} día${s>1?'s':''} de racha`:'Empieza tu racha hoy'}</p></div></div>
+  <div class="hero"><div><b>${hecho?'✅ Día registrado':'⚡ Registra algo hoy para seguir la racha'}</b><p>${s>0?`🔥 ${s} día${s>1?'s':''} de racha`:'Empieza tu racha hoy'}</p></div></div>
   <div class="card">
     <div class="between"><h3 style="margin:0">Racha semanal</h3><span class="pill gold">Récord ${bestStreak()} días</span></div>
     <div class="days">${dias.join('')}</div>
-    ${triviaCard(hecho)}
     <div class="grid2 mt"><button class="btn sm" onclick="formVenta()">✂️ Registrar venta</button><button class="btn sm sec" onclick="elegirGasto()">🧾 Registrar gasto</button></div>
+    ${triviaCard(hecho)}
   </div>
   <div class="grid2" style="margin-bottom:12px">
     <div class="kpi big"><div class="l">Utilidad del mes (negocio)</div><div class="v ${ingMes-gasMes>=0?'goldtxt':'neg'}">${money(ingMes-gasMes)}</div></div>
@@ -707,7 +707,8 @@ function triviaPick(){const tv=db.trivia;let pool=TRIVIA.map((_,i)=>i).filter(i=
   tv.cur=pool[Math.floor(Math.random()*pool.length)];tv.usadas.push(tv.cur);tv.res=null;tv.elegida=null;save()}
 function triviaCard(hecho){
   const tv=db.trivia;
-  if(hecho)return `<div class="mt"><span class="pill gold">🧠 Pregunta lograda · ${tv.ok} aciertos en total</span></div>`;
+  if(hecho)return '';
+  if(!sub.trivia)return `<button class="btn sec block mt" onclick="sub.trivia=1;render()">🧠 ¿No atendiste hoy? Responde una pregunta</button>`;
   if(tv.cur==null||!TRIVIA[tv.cur])triviaPick();
   const [q,o,a]=TRIVIA[tv.cur];
   return `<div class="mt" style="border-top:1px solid var(--line);padding-top:12px">
