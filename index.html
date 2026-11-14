@@ -205,7 +205,17 @@ function wa(tel,msg){
   window.open(`https://wa.me/${p}?text=${encodeURIComponent(msg)}`,'_blank');return true}
 function fill(t,o){return t.replace(/\{(\w+)\}/g,(m,k)=>o[k]??m)}
 function lastVisit(id){let m=null;for(const v of db.ventas)if(v.clienteId===id&&(!m||v.fecha>m))m=v.fecha;return m}
-function visits(id){return db.ventas.filter(v=>v.clienteId===id&&v.tipo!=='producto').length}
+/* Tarjeta de fidelidad: cuenta solo desde que Diego la inicia para ese cliente (c.tarjetaTs).
+   Sellos = cortes pagados desde el inicio − cortes gratis ya canjeados × meta. Con sellos ≥ meta, el próximo es gratis. */
+function visits(id){const c=cli(id);if(!c||!c.tarjetaTs)return 0;
+  const V=db.ventas.filter(v=>v.clienteId===id&&v.tipo!=='producto'&&(+v.ts||0)>=c.tarjetaTs);
+  return Math.max(0,V.filter(v=>!v.gratis).length-db.cfg.sellos*V.filter(v=>v.gratis).length)}
+const tieneTarjeta=id=>!!(cli(id)||{}).tarjetaTs;
+function iniciarTarjeta(id,ts){const c=cli(id);c.tarjetaTs=ts||Date.now();save();render();
+  if(c.tel)openSheet(`<h2 class="goldtxt">⭐ Tarjeta iniciada</h2><div class="card"><div class="stamps">${sellos(visits(id))}</div><div class="mut mt">${esc(c.nombre)} lleva ${Math.min(visits(id),db.cfg.sellos)} de ${db.cfg.sellos}</div></div>
+    <button class="btn wa block" onclick="waSello('${id}');closeSheet()">💬 Enviar tarjeta por WhatsApp</button><button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);
+  else{closeSheet();toast('⭐ Tarjeta iniciada')}}
+function reiniciarTarjeta(id){if(!confirm('¿Reiniciar la tarjeta? Los sellos vuelven a 0.'))return;iniciarTarjeta(id,Date.now())}
 function mark(tipo){db.actividad[today()]=db.actividad[today()]||[];if(!db.actividad[today()].includes(tipo))db.actividad[today()].push(tipo)}
 // La racha avanza con cualquier registro del día (venta, gasto, cita) o con la pregunta del día bien respondida.
 const okDay=d=>Array.isArray(db.actividad[d])&&db.actividad[d].some(t=>['venta','gasto','cita','trivia'].includes(t));
@@ -232,8 +242,19 @@ const pn=p=>p?(p.n+(p.det?' '+p.det:'')):'Producto';
 const prod=id=>db.productos.find(p=>p.id===id);
 /* Resumen de un período (pre = 'YYYY-MM' o 'YYYY'). Barbería: ventas de servicios − costos del negocio.
    Tienda: ventas de productos − costo de lo vendido − otros gastos de tienda (las compras de mercadería se informan aparte). */
-function resumenMes(pre){
-  const V=db.ventas.filter(v=>v.fecha.startsWith(pre)),G=db.gastos.filter(g=>g.fecha.startsWith(pre));
+/* Mes anterior para comparar. Si se mira el mes en curso, se compara hasta el mismo día del mes pasado (comparación justa). */
+function mesPrevio(ym){const[y,m]=ym.split('-').map(Number);const d=new Date(y,m-2,1);const pym=`${d.getFullYear()}-${pad(d.getMonth()+1)}`;
+  let hasta=null;if(ym===today().slice(0,7)){const dim=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();hasta=`${pym}-${pad(Math.min(+today().slice(8),dim))}`}
+  return {pym,hasta,R:resumenMes(pym,hasta),txt:`vs ${MES[d.getMonth()]}${hasta?' al '+(+hasta.slice(8)):''}`}}
+/* Flecha de variación. inv=true cuando subir es malo (costos, gastos). */
+function delta(cur,prev,txt,inv){
+  if(!prev&&!cur)return `<div class="mut" style="font-size:11px;margin-top:3px">— ${txt}</div>`;
+  if(!prev)return `<div style="font-size:11px;margin-top:3px;color:${inv?'var(--bad)':'var(--ok)'}">▲ nuevo ${txt}</div>`;
+  const pc=Math.round((cur-prev)/Math.abs(prev)*100);const up=pc>0;const good=pc===0?null:(up!==!!inv);
+  return `<div style="font-size:11px;margin-top:3px;color:${good===null?'var(--mut)':good?'var(--ok)':'var(--bad)'}">${pc===0?'=':up?'▲':'▼'} ${Math.abs(pc)}% ${txt}</div>`}
+function resumenMes(pre,hasta){
+  const en=x=>x.fecha.startsWith(pre)&&(!hasta||x.fecha<=hasta);
+  const V=db.ventas.filter(en),G=db.gastos.filter(en);
   const VB=V.filter(v=>v.tipo!=='producto'),VT=V.filter(v=>v.tipo==='producto');
   const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
   const b={ing:sum(VB,ventaTotal),cos:sum(G.filter(g=>g.tipo==='negocio'),g=>g.monto),n:VB.length};b.util=b.ing-b.cos;
@@ -272,7 +293,7 @@ VIEWS.inicio=()=>{
   const t=today(),ym=t.slice(0,7);
   const vHoy=db.ventas.filter(v=>v.fecha===t);
   const ingHoy=vHoy.reduce((s,v)=>s+ventaTotal(v),0);
-  const RM=resumenMes(ym);const ingMes=RM.ing;const gasMes=RM.ing-RM.util;
+  const RM=resumenMes(ym);const ingMes=RM.ing;const gasMes=RM.ing-RM.util;const MP=mesPrevio(ym),P=MP.R;
   const perMes=monthSum(db.gastos.filter(g=>g.tipo==='personal'),ym,g=>+g.monto);
   const citasHoy=db.citas.filter(c=>c.fecha===t).sort((a,b)=>a.hora.localeCompare(b.hora));
   const s=streak(),hecho=okDay(t);
@@ -289,11 +310,12 @@ VIEWS.inicio=()=>{
     ${triviaCard(hecho)}
   </div>
   <div class="grid2" style="margin-bottom:12px">
-    <div class="kpi big"><div class="l">Utilidad del mes</div><div class="v ${ingMes-gasMes>=0?'goldtxt':'neg'}">${money(ingMes-gasMes)}</div></div>
+    <div class="kpi big"><div class="l">Utilidad del mes</div><div class="v ${ingMes-gasMes>=0?'goldtxt':'neg'}">${money(ingMes-gasMes)}</div>${delta(RM.util,P.util,MP.txt)}</div>
     <div class="kpi"><div class="l">Hoy</div><div class="v">${money(ingHoy)}</div><div class="mut">${vHoy.length} venta${vHoy.length===1?'':'s'}</div></div>
-    <div class="kpi"><div class="l">Ventas mes</div><div class="v pos">${money(ingMes)}</div></div>
-    <div class="kpi"><div class="l">Costos mes</div><div class="v neg">${money(gasMes)}</div></div>
-    <div class="kpi"><div class="l">Gastos personales</div><div class="v">${money(perMes)}</div></div>
+    <div class="kpi"><div class="l">✂️ Cortes mes</div><div class="v">${RM.b.n}</div>${delta(RM.b.n,P.b.n,MP.txt)}</div>
+    <div class="kpi"><div class="l">Ventas mes</div><div class="v pos">${money(ingMes)}</div>${delta(ingMes,P.ing,MP.txt)}</div>
+    <div class="kpi"><div class="l">Costos mes</div><div class="v neg">${money(gasMes)}</div>${delta(gasMes,P.ing-P.util,MP.txt,true)}</div>
+    <div class="kpi"><div class="l">Gastos personales</div><div class="v">${money(perMes)}</div>${delta(perMes,P.per,MP.txt,true)}</div>
   </div>
   ${(()=>{const F=fiados();if(!F.length)return '';return `<div class="card" style="border-color:#5a2a27">
     <div class="between"><h3 style="margin:0;color:#ffb4ae">💸 Fiado · te deben</h3><b class="neg">${money(F.reduce((s,x)=>s+x.m,0))}</b></div>
@@ -340,9 +362,9 @@ VIEWS.clientes=()=>{
     .map(c=>({c,lv:lastVisit(c.id)})).sort((a,b)=>a.c.nombre.localeCompare(b.c.nombre));
   return `<div class="between" style="margin-bottom:10px"><h2 class="goldtxt" style="margin:0">Clientes</h2><button class="btn sm" onclick="formCliente()">+ Cliente</button></div>
   <input class="search" placeholder="🔍 Buscar nombre o teléfono" value="${esc(sub.q||'')}" oninput="sub.q=this.value;clearTimeout(window._qs);window._qs=setTimeout(()=>{render();const i=$('.search');i.focus();i.setSelectionRange(i.value.length,i.value.length)},250)">
-  <div class="card">${list.length?list.map(({c,lv})=>{const n=visits(c.id)%db.cfg.sellos;
+  <div class="card">${list.length?list.map(({c,lv})=>{const n=Math.min(visits(c.id),db.cfg.sellos);
     return `<div class="row" onclick="verCliente('${c.id}')"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b>
-    <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'} · ⭐ ${n}/${db.cfg.sellos}</span></div>
+    <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'}${tieneTarjeta(c.id)?` · ⭐ ${n}/${db.cfg.sellos}`:''}</span></div>
     ${deuda(c.id)?`<span class="pill red">Fió ${money(deuda(c.id))}</span>`:''}
     ${lv&&diffDays(lv,today())>db.cfg.diasInactivo?'<span class="pill red">Inactivo</span>':''}</div>`}).join(''):'<div class="empty">Aún no hay clientes</div>'}</div>`;
 };
@@ -369,9 +391,9 @@ VIEWS.whatsapp=()=>{
     ${p.prox.length?`<div class="mut mt">Próximos 7 días: ${p.prox.map(c=>`${esc(c.nombre)} (${c.cumple.slice(8)} ${MES[+c.cumple.slice(5,7)-1]})`).join(', ')}</div>`:''}</div>
     <div class="card"><h3>💈 No vienen hace +${db.cfg.diasInactivo} días</h3>${p.ina.length?p.ina.map(({c,lv})=>`<div class="row"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b><span>Hace ${diffDays(lv,today())} días${c.ultContacto?` · Escrito ${fmtD(c.ultContacto)}`:''}</span></div><button class="btn sm wa" onclick="waVuelta('${c.id}')">Escribir</button></div>`).join(''):'<div class="empty">Todos al día 👑</div>'}</div>`;
   }else if(tab==='fidel'){
-    const list=db.clientes.map(c=>({c,n:visits(c.id)})).filter(x=>x.n>0).sort((a,b)=>(b.n%db.cfg.sellos)-(a.n%db.cfg.sellos));
-    body=`<div class="card"><div class="mut">Cada ${db.cfg.sellos} cortes, el siguiente es gratis. Al registrar una venta la app te ofrece mandar la tarjeta por WhatsApp, así el cliente la tiene y guarda tu número.</div></div>
-    <div class="card">${list.length?list.map(({c,n})=>{const s=n%db.cfg.sellos;const premio=s===0;return `<div class="row"><div class="main"><b>${esc(c.nombre)} ${premio?'<span class="pill gold">🎁 Próximo gratis</span>':''}</b><span class="stamps">${sellos(n)}</span></div><button class="btn sm wa" onclick="waSello('${c.id}')">Enviar</button></div>`}).join(''):'<div class="empty">Sin visitas todavía</div>'}</div>`;
+    const list=db.clientes.filter(c=>c.tarjetaTs).map(c=>({c,n:visits(c.id)})).sort((a,b)=>b.n-a.n);
+    body=`<div class="card"><div class="mut">Cada ${db.cfg.sellos} cortes, el siguiente es gratis. La tarjeta cuenta solo desde que tú la inicias: al registrar un corte o en la ficha del cliente toca “⭐ Iniciar tarjeta”.</div></div>
+    <div class="card">${list.length?list.map(({c,n})=>{const premio=n>=db.cfg.sellos;return `<div class="row"><div class="main"><b>${esc(c.nombre)} ${premio?'<span class="pill gold">🎁 Próximo gratis</span>':''}</b><span class="stamps">${sellos(n)}</span></div><button class="btn sm wa" onclick="waSello('${c.id}')">Enviar</button></div>`}).join(''):'<div class="empty">Ningún cliente con tarjeta. Iníciala desde la ficha del cliente.</div>'}</div>`;
   }else{
     body=`<div class="card"><h3>Plantillas</h3><div class="mut">Usa {nombre}, {dias}, {fecha}, {hora}, {sellos}, {n}, {meta}, {falta}</div>
     <label>Volver a cortarse</label><textarea id="m1">${esc(db.cfg.msgVuelta)}</textarea>
@@ -386,7 +408,7 @@ VIEWS.whatsapp=()=>{
   return `<h2 class="goldtxt" style="margin:0 0 10px">WhatsApp</h2><div class="tabs">${tabs.map(([k,l])=>`<div class="tab ${tab===k?'on':''}" onclick="go('whatsapp','${k}')">${l}${k==='pend'&&p.total?` · ${p.total}`:''}</div>`).join('')}</div>${body}`;
 };
 
-function sellos(n){const m=db.cfg.sellos;const s=n%m===0&&n>0?m:n%m;return '✂️'.repeat(s)+'⚪'.repeat(m-s)}
+function sellos(n){const m=db.cfg.sellos;const s=Math.min(n,m);return '✂️'.repeat(s)+'⚪'.repeat(m-s)}
 
 VIEWS.finanzas=()=>{
   const tab=sub.finanzas||'resumen';
@@ -403,24 +425,28 @@ VIEWS.finanzas=()=>{
   const byCat=arr=>{const o={};arr.forEach(g=>o[g.cat]=(o[g.cat]||0)+ +g.monto);const tot=arr.reduce((s,g)=>s+ +g.monto,0)||1;
     return Object.entries(o).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="mt"><div class="between"><span>${esc(k)}</span><b>${money(v)}</b></div><div class="bar mt"><i style="width:${v/tot*100}%"></i></div></div>`).join('')};
   if(tab==='resumen'){
-    const R=resumenMes(ym);
+    const R=resumenMes(ym);const MP=mesPrevio(ym),P=MP.R;
     const pago={};R.V.forEach(v=>pago[v.pago]=(pago[v.pago]||0)+ventaTotal(v));
     const serv={};R.VB.forEach(v=>serv[v.servicio]=(serv[v.servicio]||0)+1);
     const pv={};R.VT.forEach(v=>{const pp=prod(v.productoId);const k=pp?pn(pp):(String(v.servicio||'Producto').replace(/ ×\d+$/,''));pv[k]=pv[k]||{u:0,g:0};pv[k].u+=(+v.cant||1);pv[k].g+=ventaTotal(v)-(+v.costo||0)});
     const prop=R.V.reduce((s,v)=>s+(+v.propina||0),0);
     const stC=db.productos.reduce((s,x)=>s+x.stock*(+x.costo||0),0),stP=db.productos.reduce((s,x)=>s+x.stock*(+x.precio||0),0);
     const top=Object.entries(db.clientes.reduce((o,c)=>{o[c.nombre]=R.V.filter(v=>v.clienteId===c.id).reduce((s,v)=>s+ventaTotal(v),0);return o},{})).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]).slice(0,5);
-    const ln=(l,v,c)=>`<div class="between mt"><span class="mut" style="font-size:13px">${l}</span><b class="${c||''}">${v}</b></div>`;
+    const ln=(l,v,c,d)=>`<div class="between mt"><span class="mut" style="font-size:13px">${l}</span><span style="text-align:right"><b class="${c||''}">${v}</b>${d||''}</span></div>`;
     body=`${mesSel}
     <button class="btn sec block" style="margin-bottom:12px" onclick="menuExport()">📊 Exportar a Excel</button>
     <div class="grid2" style="margin-bottom:12px">
-    <div class="kpi big"><div class="l">Utilidad total del mes</div><div class="v ${R.util>=0?'goldtxt':'neg'}">${money(R.util)}</div><div class="mut">Barbería ${money(R.b.util)} · Tienda ${money(R.t.util)}</div></div></div>
-    <div class="card"><h3>✂️ Barbería</h3>${ln('Ventas ('+R.b.n+' servicios)',money(R.b.ing),'pos')}${ln('Costos',money(R.b.cos),'neg')}${ln('Propinas',money(prop))}${ln('Ticket promedio',money(R.b.n?R.b.ing/R.b.n:0))}
+    <div class="kpi big"><div class="l">Utilidad total del mes</div><div class="v ${R.util>=0?'goldtxt':'neg'}">${money(R.util)}</div><div class="mut">Barbería ${money(R.b.util)} · Tienda ${money(R.t.util)}</div>${delta(R.util,P.util,MP.txt)}</div>
+    <div class="kpi"><div class="l">✂️ Cortes</div><div class="v">${R.b.n}</div>${delta(R.b.n,P.b.n,MP.txt)}</div>
+    <div class="kpi"><div class="l">Ventas totales</div><div class="v pos">${money(R.ing)}</div>${delta(R.ing,P.ing,MP.txt)}</div>
+    <div class="kpi"><div class="l">Ticket promedio</div><div class="v">${money(R.b.n?R.b.ing/R.b.n:0)}</div>${delta(R.b.n?R.b.ing/R.b.n:0,P.b.n?P.b.ing/P.b.n:0,MP.txt)}</div>
+    <div class="kpi"><div class="l">👕 Unidades tienda</div><div class="v">${R.t.n}</div>${delta(R.t.n,P.t.n,MP.txt)}</div></div>
+    <div class="card"><h3>✂️ Barbería</h3>${ln('Ventas ('+R.b.n+' servicios)',money(R.b.ing),'pos',delta(R.b.ing,P.b.ing,MP.txt))}${ln('Costos',money(R.b.cos),'neg',delta(R.b.cos,P.b.cos,MP.txt,true))}${ln('Propinas',money(prop))}
       <div class="between mt" style="border-top:1px solid var(--line);padding-top:8px"><b>Utilidad</b><b class="${R.b.util>=0?'goldtxt':'neg'}">${money(R.b.util)}</b></div></div>
-    <div class="card"><h3>👕 Tienda</h3>${ln('Ventas ('+R.t.n+' unidades)',money(R.t.ing),'pos')}${ln('Costo de lo vendido',money(R.t.cogs),'neg')}${R.t.otros?ln('Otros gastos tienda',money(R.t.otros),'neg'):''}
+    <div class="card"><h3>👕 Tienda</h3>${ln('Ventas ('+R.t.n+' unidades)',money(R.t.ing),'pos',delta(R.t.ing,P.t.ing,MP.txt))}${ln('Costo de lo vendido',money(R.t.cogs),'neg')}${R.t.otros?ln('Otros gastos tienda',money(R.t.otros),'neg'):''}
       <div class="between mt" style="border-top:1px solid var(--line);padding-top:8px"><b>Ganancia</b><b class="${R.t.util>=0?'goldtxt':'neg'}">${money(R.t.util)}</b></div>
       ${ln('Invertido en mercadería este mes',money(R.t.compras))}${ln('Stock sin vender (a costo)',money(stC))}${ln('Stock sin vender (a precio venta)',money(stP))}</div>
-    <div class="kpi big" style="border-color:var(--line);background:var(--card2);margin-bottom:12px"><div class="l">Te queda tras gastos personales</div><div class="v ${R.util-R.per>=0?'pos':'neg'}">${money(R.util-R.per)}</div><div class="mut">Personales: ${money(R.per)}</div></div>
+    <div class="kpi big" style="border-color:var(--line);background:var(--card2);margin-bottom:12px"><div class="l">Te queda tras gastos personales</div><div class="v ${R.util-R.per>=0?'pos':'neg'}">${money(R.util-R.per)}</div>${delta(R.util-R.per,P.util-P.per,MP.txt)}<div class="mut">Personales: ${money(R.per)}</div></div>
     <div class="card"><h3>Por medio de pago</h3>${Object.keys(pago).length?Object.entries(pago).map(([k,v])=>`<div class="between mt"><span>${esc(k)}</span><b>${money(v)}</b></div>`).join(''):'<div class="empty">Sin ventas</div>'}</div>
     <div class="card"><h3>Servicios más vendidos</h3>${Object.keys(serv).length?Object.entries(serv).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="between mt"><span>${esc(k)}</span><b>${v}</b></div>`).join(''):'<div class="empty">—</div>'}</div>
     <div class="card"><h3>Productos más vendidos</h3>${Object.keys(pv).length?Object.entries(pv).sort((a,b)=>b[1].g-a[1].g).map(([k,v])=>`<div class="between mt"><span>${esc(k)} <span class="mut">×${v.u}</span></span><b>${money(v.g)} <span class="mut">ganancia</span></b></div>`).join(''):'<div class="empty">—</div>'}</div>
@@ -524,8 +550,9 @@ function formVenta(id,pre){
   chkGratis();
 }
 function chkGratis(){const c=val('vC');const e=$('#vGr'),g=$('#vG');if(!e||!g||g.dataset.edit)return;
-  if(c&&visits(c)>0&&visits(c)%db.cfg.sellos===0){e.innerHTML='<div class="pill gold mt" style="display:inline-block">🎁 Este cliente tiene corte gratis</div>';g.checked=true;g.dataset.auto=1}
+  if(c&&visits(c)>=db.cfg.sellos){e.innerHTML='<div class="pill gold mt" style="display:inline-block">🎁 Este cliente tiene corte gratis</div>';g.checked=true;g.dataset.auto=1}
   else{e.innerHTML='';if(g.dataset.auto){g.checked=false;delete g.dataset.auto}}}
+
 function pickServ(el){[...el.parentNode.children].forEach(c=>c.classList.remove('on'));el.classList.add('on');$('#vM').value=el.dataset.p}
 function saveVenta(id,citaId){
   if(id&&window._borrar){
@@ -539,7 +566,7 @@ function saveVenta(id,citaId){
   const o={clienteId:cid,servicio:s?s.dataset.n:'Servicio',monto:+val('vM')||0,propina:+val('vP')||0,pago:p?p.textContent:'Efectivo',gratis:$('#vG').checked,fecha:val('vF')||today()};
   if(id){Object.assign(db.ventas.find(x=>x.id===id),o)}
   else{
-    db.ventas.push({id:uid(),ts:Date.now(),...o});
+    var nueva={id:uid(),ts:Date.now(),...o};db.ventas.push(nueva);
     db.inventario.forEach(i=>{if(+i.porCorte)i.stock=Math.max(0,+i.stock-+i.porCorte)});
     if(citaId){const c=db.citas.find(x=>x.id===citaId);if(c)c.estado='hecha'}
     mark('venta');
@@ -547,7 +574,10 @@ function saveVenta(id,citaId){
   save();closeSheet();render();
   const nav=db.inventario.find(i=>i.id==='navajas');
   if(nav&&+nav.stock<=+nav.min)toast(`⚠️ Quedan ${nav.stock} navajas`);
-  if(!id&&cid){const k=cli(cid);if(k.tel)openSheet(`<h2 class="goldtxt">✅ Venta guardada</h2><div class="card"><div class="stamps">${sellos(visits(cid))}</div><div class="mut mt">${esc(k.nombre)} lleva ${visits(cid)%db.cfg.sellos||db.cfg.sellos} de ${db.cfg.sellos}</div></div>
+  if(!id&&cid){const k=cli(cid);
+    if(!tieneTarjeta(cid))openSheet(`<h2 class="goldtxt">✅ Venta guardada</h2><div class="card"><div class="mut">${esc(k.nombre)} aún no tiene tarjeta de fidelidad.</div></div>
+      <button class="btn block" onclick="iniciarTarjeta('${cid}',${nueva.ts})">⭐ Iniciar tarjeta con este corte</button><button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);
+    else if(k.tel)openSheet(`<h2 class="goldtxt">✅ Venta guardada</h2><div class="card"><div class="stamps">${sellos(visits(cid))}</div><div class="mut mt">${esc(k.nombre)} lleva ${Math.min(visits(cid),db.cfg.sellos)} de ${db.cfg.sellos}</div></div>
     <button class="btn wa block" onclick="waSello('${cid}');closeSheet()">💬 Enviar tarjeta por WhatsApp</button><button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);else toast('✅ Venta guardada')}
   else toast('✅ Venta guardada');
 }
@@ -603,7 +633,11 @@ function verCliente(id){
   <div class="grid3 mt"><div class="kpi"><div class="l">Visitas</div><div class="v">${V.length}</div></div><div class="kpi"><div class="l">Total</div><div class="v" style="font-size:16px">${money(tot)}</div></div><div class="kpi"><div class="l">Última</div><div class="v" style="font-size:16px">${lv?diffDays(lv,today())+'d':'—'}</div></div></div>
   ${deuda(id)?`<div class="card mt" style="border-color:#5a2a27"><div class="between"><h3 style="margin:0;color:#ffb4ae">💸 Fió</h3><b class="neg">${money(deuda(id))}</b></div>
     <div class="grid2 mt"><button class="btn sm wa" onclick="waFiado('${id}')">💬 Recordar</button><button class="btn sm" onclick="pagarFiado('${id}')">Pagó</button></div></div>`:''}
-  <div class="card mt"><h3>Tarjeta ⭐</h3><div class="stamps">${sellos(V.length)}</div></div>
+  <div class="card mt"><h3>Tarjeta ⭐</h3>${c.tarjetaTs?`<div class="stamps">${sellos(visits(id))}</div><div class="mut mt">Desde ${fmtD(dkey(new Date(c.tarjetaTs)))} · ${Math.min(visits(id),db.cfg.sellos)} de ${db.cfg.sellos}</div>
+    <div class="grid2 mt"><button class="btn sm wa" onclick="waSello('${id}')">💬 Enviar</button><button class="btn sm sec" onclick="reiniciarTarjeta('${id}')">Reiniciar</button></div>`
+    :(()=>{const hoy=V.filter(v=>v.tipo!=='producto'&&v.fecha===today()).sort((a,b)=>(b.ts||0)-(a.ts||0))[0];
+      return `<div class="mut">Sin tarjeta todavía.</div>${hoy?`<button class="btn block mt" onclick="iniciarTarjeta('${id}',${+hoy.ts||0})">⭐ Iniciar con el corte de hoy</button>`:''}
+      <button class="btn ${hoy?'sec ':''}block mt" onclick="iniciarTarjeta('${id}')">⭐ Iniciar desde el próximo corte</button>`})()}</div>
   ${c.notas?`<div class="card"><h3>Notas</h3>${esc(c.notas).replace(/\n/g,'<br>')}</div>`:''}
   ${prox?`<div class="card"><h3>Próxima cita</h3>${fmtD(prox.fecha)} · ${prox.hora}</div>`:''}
   <div class="grid2"><button class="btn wa" onclick="wa(${jsq(c.tel)},${jsq('Hola '+c.nombre+'! 💈')})">💬 WhatsApp</button><button class="btn" onclick="formCita(null,null,'${id}')">📅 Agendar</button>
@@ -723,7 +757,7 @@ function delItem(col,id){if(!confirm('¿Eliminar? No se puede deshacer.'))return
 function waVuelta(id){const c=cli(id);const lv=lastVisit(id);if(wa(c.tel,fill(db.cfg.msgVuelta,{nombre:c.nombre.split(' ')[0],dias:diffDays(lv,today())}))){c.ultContacto=today();save();setTimeout(render,400)}}
 function waCumple(id){const c=cli(id);if(wa(c.tel,fill(db.cfg.msgCumple,{nombre:c.nombre.split(' ')[0]}))){c.cumpleEnviado=today().slice(0,4);save();setTimeout(render,400)}}
 function waRec(id){const a=db.citas.find(x=>x.id===id);const c=cli(a.clienteId)||{};if(wa(c.tel,fill(db.cfg.msgRecordatorio,{nombre:(c.nombre||'').split(' ')[0],fecha:fmtD(a.fecha),hora:a.hora}))){a.recordado=true;save();setTimeout(render,400)}}
-function waSello(id){const c=cli(id);const n=visits(id);const m=db.cfg.sellos;const s=n%m===0&&n>0?m:n%m;
+function waSello(id){const c=cli(id);const n=visits(id);const m=db.cfg.sellos;const s=Math.min(n,m);
   wa(c.tel,fill(db.cfg.msgSello,{nombre:c.nombre.split(' ')[0],sellos:sellos(n),n:s,meta:m,falta:s>=m?'🎁 ¡Tu próximo corte es GRATIS!':`Te faltan ${m-s} para un corte gratis.`}))}
 function saveMsgs(){db.cfg.msgVuelta=val('m1');db.cfg.msgCumple=val('m2');db.cfg.msgRecordatorio=val('m3');db.cfg.msgSello=val('m4');db.cfg.msgFiado=val('m7')||db.cfg.msgFiado;
   db.cfg.diasInactivo=Math.max(1,+val('m5')||14);db.cfg.sellos=Math.max(2,+val('m6')||10);save();render();toast('✅ Guardado')}
