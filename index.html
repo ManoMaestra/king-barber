@@ -138,6 +138,7 @@ textarea{min-height:90px;resize:vertical}
 <div class="toast" id="toast"></div>
 <input type="file" id="photoIn" accept="image/*" capture="environment" hidden>
 <input type="file" id="importIn" accept="application/json" hidden>
+<input type="file" id="ssIn" accept="image/*" hidden>
 
 <script>
 /* ====================== DATOS ====================== */
@@ -289,8 +290,10 @@ VIEWS.agenda=()=>{
   <div class="tabs">${tabs.join('')}</div>
   <div class="card"><h3>${fmtD(sel)}</h3>${list.length?list.map(rowCita).join(''):'<div class="empty">Día libre. Toca “+ Agendar”.</div>'}</div>
   ${prox.length?`<div class="card"><h3>Más adelante</h3>${prox.map(c=>`<div class="row" onclick="formCita('${c.id}')"><div class="main"><b>${esc((cli(c.clienteId)||{}).nombre||'Cliente')}</b><span>${fmtD(c.fecha)} · ${c.hora}</span></div></div>`).join('')}</div>`:''}
-  <div class="card"><h3>💡 Agendar desde WhatsApp</h3><div class="mut">Copia el mensaje del cliente (ej: “mañana a las 5”), toca <b>Pegar mensaje</b> y la app intenta leer día y hora.</div>
-  <button class="btn sec block mt" onclick="pegarWA()">📋 Pegar mensaje de WhatsApp</button></div>`;
+  <div class="card"><h3>💡 Agendar desde WhatsApp</h3><div class="mut">Sube una captura del chat o pega el mensaje del cliente (ej: “mañana a las 5”). La app lee el nombre, el día y la hora.</div>
+  <button class="btn block mt" onclick="$('#ssIn').click()">📷 Subir captura de WhatsApp</button>
+  <button class="btn sec block mt" onclick="pegarWA()">📋 Pegar mensaje de WhatsApp</button>
+  <div class="mut mt">En Android, con la app instalada: en WhatsApp toca Compartir y elige <b>King Barber</b>.</div></div>`;
 };
 
 VIEWS.clientes=()=>{
@@ -546,13 +549,39 @@ function saveCita(id){
 function atender(id){const c=db.citas.find(x=>x.id===id);const s=db.servicios.find(x=>x.n===c.servicio);formVenta(null,{clienteId:c.clienteId,servicio:c.servicio,monto:s?s.p:undefined,citaId:id})}
 
 /* Pegar mensaje WhatsApp -> sugerir cita */
-async function pegarWA(){
-  let txt='';try{txt=await navigator.clipboard.readText()}catch(e){}
-  openSheet(`<h2 class="goldtxt">Mensaje del cliente</h2><textarea id="pw" placeholder="Pega aquí: “hola, ¿tienes hora mañana a las 5?”">${esc(txt)}</textarea>
+async function pegarWA(txt,desdeFoto){
+  if(txt==null){txt='';try{txt=await navigator.clipboard.readText()}catch(e){}}
+  openSheet(`<h2 class="goldtxt">${desdeFoto?'Texto de la captura':'Mensaje del cliente'}</h2>
+  ${desdeFoto?'<div class="mut" style="margin-bottom:8px">Revisa y corrige si algo se leyó mal.</div>':''}
+  <textarea id="pw" style="min-height:${desdeFoto?180:90}px" placeholder="Pega aquí: “hola, ¿tienes hora mañana a las 5?”">${esc(txt)}</textarea>
   <button class="btn block mt" onclick="leerWA()">Leer día y hora</button>`);
 }
+const norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+/* Captura de pantalla -> texto (OCR en el teléfono con Tesseract, se descarga la primera vez) */
+let _tess=null;
+function cargarTesseract(){return _tess||(_tess=new Promise((ok,ko)=>{const s=document.createElement('script');
+  s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';s.onload=ok;s.onerror=()=>{_tess=null;ko()};document.head.appendChild(s)}))}
+async function leerCaptura(blob){
+  openSheet(`<h2 class="goldtxt">Leyendo captura…</h2><div class="empty">🔍 Esto toma unos segundos.<br>La primera vez necesita internet.</div><div class="bar"><i id="ocrBar" style="width:5%"></i></div>`);
+  try{
+    await cargarTesseract();
+    const r=await Tesseract.recognize(blob,'spa',{logger:m=>{const b=$('#ocrBar');if(b&&m.status==='recognizing text')b.style.width=Math.max(5,m.progress*100)+'%'}});
+    const txt=r.data.text.split('\n').map(l=>l.trim()).filter(Boolean).join('\n');
+    if(!txt){toast('No se pudo leer texto en la imagen');closeSheet();return}
+    pegarWA(txt,true);
+  }catch(e){closeSheet();toast('⚠️ No se pudo leer la captura. Revisa tu conexión.')}
+}
 function leerWA(){
-  const t=val('pw').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  const raw=val('pw');
+  // Quita la hora de envío de cada mensaje (ej: "17:42 ✓✓") para no confundirla con la hora pedida.
+  const limpio=raw.split('\n').map(l=>l.replace(/\s*\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s?m\.?)?\s*[✓✔vV/]*\s*$/i,'')).join('\n');
+  const t=norm(limpio);
+  const nt=norm(raw);
+  const match=db.clientes.map(c=>({c,full:norm(c.nombre),first:norm(c.nombre).split(' ')[0]}))
+    .filter(x=>x.first.length>2).sort((a,b)=>b.full.length-a.full.length)
+    .find(x=>nt.includes(x.full)||new RegExp('\\b'+x.first.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b').test(nt));
+  const cid=match?match.c.id:'';
+  const guess=!cid?(raw.split('\n').map(l=>l.trim()).find(l=>/^[A-Za-zÁÉÍÓÚÑáéíóúñ ]{3,30}$/.test(l)&&!/^(hoy|ayer|en linea|en línea|escribiendo)/i.test(l))||''):'';
   let f=today();
   if(/pasado manana/.test(t))f=addDays(f,2);else if(/manana/.test(t))f=addDays(f,1);
   const dn=['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
@@ -561,7 +590,8 @@ function leerWA(){
   if(dm){let m=isNaN(dm[2])?MES.findIndex(x=>dm[2].startsWith(x))+1:+dm[2];if(m>0){let y=+today().slice(0,4);let c=`${y}-${pad(m)}-${pad(+dm[1])}`;if(c<today())c=`${y+1}-${pad(m)}-${pad(+dm[1])}`;f=c}}
   let h='';const hm=t.match(/(?:a las|las|tipo|a la)\s*(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?/)||t.match(/\b(\d{1,2})[:.](\d{2})\b/)||t.match(/\b(\d{1,2})\s*(am|pm|hrs?)\b/);
   if(hm){let H=+hm[1],M=hm[2]&&!isNaN(hm[2])?+hm[2]:0;const ap=(hm[3]||hm[2]||'');if((/pm/.test(ap)||H<9)&&H<12)H+=12;h=`${pad(H)}:${pad(M>=30?30:0)}`}
-  closeSheet();setTimeout(()=>{formCita(null,f);if(h){$('#aHx').value=h;paintHoras()}toast(`Leído: ${fmtD(f)}${h?' '+h:' (elige hora)'}`)},200);
+  closeSheet();setTimeout(()=>{formCita(null,f,cid);if(guess&&$('#aN'))$('#aN').value=guess;if(h){$('#aHx').value=h;paintHoras()}
+    toast(`Leído: ${cid?cli(cid).nombre+' · ':''}${fmtD(f)}${h?' '+h:' (elige hora)'}`)},200);
 }
 
 /* --- Inventario / servicios --- */
@@ -706,6 +736,21 @@ function borrarTodo(){if(!confirm('¿Borrar TODOS los datos? No se puede deshace
 if(db.ventas.length>5&&(!db.cfg.ultBackup||diffDays(db.cfg.ultBackup,today())>7))setTimeout(()=>toast('💾 Hace más de 7 días sin respaldo (Finanzas › Ajustes)'),1500);
 
 if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js').catch(()=>{});
+$('#ssIn').addEventListener('change',e=>{const f=e.target.files[0];e.target.value='';if(f)leerCaptura(f)});
+/* Llegada desde "Compartir" de WhatsApp (Android, app instalada). El service worker deja lo compartido en caché. */
+(async()=>{
+  const q=new URLSearchParams(location.search);
+  if(!q.has('share'))return;
+  history.replaceState(null,'',location.pathname);
+  go('agenda');
+  try{
+    const c=await caches.open('kb-share');
+    const img=await c.match('shared-image'),txt=await c.match('shared-text');
+    await c.delete('shared-image');await c.delete('shared-text');
+    if(img){leerCaptura(await img.blob());return}
+    if(txt){const t=await txt.text();if(t.trim())pegarWA(t)}
+  }catch(e){}
+})();
 render();
 </script>
 </body>
