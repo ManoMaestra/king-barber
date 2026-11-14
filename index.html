@@ -144,6 +144,7 @@ textarea{min-height:90px;resize:vertical}
 const KEY='kingbarber_v1';
 const DEF={
   clientes:[], ventas:[], gastos:[], citas:[], fotos:[], actividad:{},
+  trivia:{cur:null,usadas:[],ok:0,mal:0,dia:null,res:null},
   servicios:[{n:'Corte',p:10000},{n:'Corte + Barba',p:14000},{n:'Barba',p:6000},{n:'Corte niño',p:8000},{n:'Diseño / Líneas',p:3000}],
   inventario:[
     {id:'navajas',n:'Navajas',stock:200,min:30,u:'un',porCorte:1},
@@ -193,13 +194,15 @@ function fill(t,o){return t.replace(/\{(\w+)\}/g,(m,k)=>o[k]??m)}
 function lastVisit(id){let m=null;for(const v of db.ventas)if(v.clienteId===id&&(!m||v.fecha>m))m=v.fecha;return m}
 function visits(id){return db.ventas.filter(v=>v.clienteId===id).length}
 function mark(tipo){db.actividad[today()]=db.actividad[today()]||[];if(!db.actividad[today()].includes(tipo))db.actividad[today()].push(tipo)}
+// La racha avanza solo con la pregunta del día respondida correctamente.
+const okDay=d=>Array.isArray(db.actividad[d])&&db.actividad[d].includes('trivia');
 function streak(){
   let n=0,d=today();
-  if(!db.actividad[d])d=addDays(d,-1);
-  while(db.actividad[d]){n++;d=addDays(d,-1)}
+  if(!okDay(d))d=addDays(d,-1);
+  while(okDay(d)){n++;d=addDays(d,-1)}
   return n}
 function bestStreak(){
-  const ks=Object.keys(db.actividad).sort();let b=0,c=0,prev=null;
+  const ks=Object.keys(db.actividad).filter(okDay).sort();let b=0,c=0,prev=null;
   for(const k of ks){c=(prev&&diffDays(prev,k)===1)?c+1:1;b=Math.max(b,c);prev=k}return b}
 function monthSum(arr,ym,f){return arr.filter(x=>x.fecha.startsWith(ym)).reduce((s,x)=>s+f(x),0)}
 const ventaTotal=v=>(v.gratis?0:+v.monto||0)+(+v.propina||0);
@@ -237,17 +240,18 @@ VIEWS.inicio=()=>{
   const gasMes=monthSum(db.gastos.filter(g=>g.tipo==='negocio'),ym,g=>+g.monto);
   const perMes=monthSum(db.gastos.filter(g=>g.tipo==='personal'),ym,g=>+g.monto);
   const citasHoy=db.citas.filter(c=>c.fecha===t).sort((a,b)=>a.hora.localeCompare(b.hora));
-  const s=streak(),hecho=!!db.actividad[t];
-  const dias=[];for(let i=6;i>=0;i--){const d=addDays(t,-i);dias.push(`<div><i class="${db.actividad[d]?'on':''}">${db.actividad[d]?'✓':''}</i>${DIA[parseD(d).getDay()]}</div>`)}
+  const s=streak(),hecho=okDay(t);
+  const dias=[];for(let i=6;i>=0;i--){const d=addDays(t,-i);dias.push(`<div><i class="${okDay(d)?'on':''}">${okDay(d)?'✓':''}</i>${DIA[parseD(d).getDay()]}</div>`)}
   const bajos=db.inventario.filter(i=>+i.stock<=+i.min);
   const p=pendientesWA();
   const nav=db.inventario.find(i=>i.id==='navajas');
   return `
-  <div class="hero"><div><b>${hecho?'✅ Día registrado':'⚡ Aún no registras hoy'}</b><p>${s>0?`🔥 ${s} día${s>1?'s':''} de racha`:'Empieza tu racha hoy'}</p></div></div>
+  <div class="hero"><div><b>${hecho?'✅ Pregunta del día lograda':'⚡ Responde la pregunta del día'}</b><p>${s>0?`🔥 ${s} día${s>1?'s':''} de racha`:'Empieza tu racha hoy'}</p></div></div>
   <div class="card">
     <div class="between"><h3 style="margin:0">Racha semanal</h3><span class="pill gold">Récord ${bestStreak()} días</span></div>
     <div class="days">${dias.join('')}</div>
-    ${hecho?'':`<div class="grid2 mt"><button class="btn sm" onclick="formVenta()">✂️ Registrar venta</button><button class="btn sm sec" onclick="takePhoto()">📸 Foto de dónde estás</button></div>`}
+    ${triviaCard(hecho)}
+    <div class="grid2 mt"><button class="btn sm" onclick="formVenta()">✂️ Registrar venta</button><button class="btn sm sec" onclick="elegirGasto()">🧾 Registrar gasto</button></div>
   </div>
   <div class="grid2" style="margin-bottom:12px">
     <div class="kpi big"><div class="l">Utilidad del mes (negocio)</div><div class="v ${ingMes-gasMes>=0?'goldtxt':'neg'}">${money(ingMes-gasMes)}</div></div>
@@ -595,6 +599,88 @@ function waSello(id){const c=cli(id);const n=visits(id);const m=db.cfg.sellos;co
 function saveMsgs(){db.cfg.msgVuelta=val('m1');db.cfg.msgCumple=val('m2');db.cfg.msgRecordatorio=val('m3');db.cfg.msgSello=val('m4');
   db.cfg.diasInactivo=Math.max(1,+val('m5')||14);db.cfg.sellos=Math.max(2,+val('m6')||10);save();render();toast('✅ Guardado')}
 
+/* --- Pregunta del día (racha) --- */
+const TRIVIA=[
+['¿Cuánto es 15% de $20.000?',['$2.000','$3.000','$1.500','$3.500'],1],
+['Si cobras $10.000 por corte, ¿cuánto ganas con 7 cortes?',['$60.000','$75.000','$70.000','$17.000'],2],
+['¿Cuánto es 8 × 7?',['54','56','58','64'],1],
+['¿Cuánto es 144 ÷ 12?',['11','14','12','13'],2],
+['Compras 200 navajas a $40.000. ¿Cuánto cuesta cada una?',['$200','$400','$20','$2.000'],0],
+['¿Qué número sigue? 2, 4, 8, 16, …',['24','30','32','20'],2],
+['Si un corte dura 30 min, ¿cuántos cortes caben en 4 horas?',['6','8','10','12'],1],
+['¿Cuánto es la mitad de 3/4?',['3/8','1/4','3/2','1/2'],0],
+['¿Cuánto es 25 × 4?',['90','100','125','104'],1],
+['Un producto de $15.000 tiene 20% de descuento. ¿Cuánto pagas?',['$12.000','$13.000','$11.000','$3.000'],0],
+['¿Cuántos minutos hay en 2,5 horas?',['250','120','150','180'],2],
+['¿Cuál número es mayor?',['0,7','0,65','0,09','0,699'],0],
+['Si hoy es lunes, ¿qué día será en 10 días?',['Miércoles','Jueves','Viernes','Martes'],1],
+['¿Cuánto es 9²?',['18','81','99','72'],1],
+['Ganaste $420.000 y gastaste $253.000. ¿Cuánto te queda?',['$167.000','$177.000','$157.000','$173.000'],0],
+['¿Cuál es la capital de Chile?',['Valparaíso','Concepción','Santiago','La Serena'],2],
+['¿En qué año se celebró el Bicentenario de Chile?',['1910','2000','2010','2018'],2],
+['¿Cuál es el desierto más árido del mundo?',['Sahara','Atacama','Gobi','Kalahari'],1],
+['¿Qué poeta chileno ganó el Nobel en 1971?',['Gabriela Mistral','Pablo Neruda','Nicanor Parra','Vicente Huidobro'],1],
+['¿Quién fue la primera persona latinoamericana en ganar el Nobel de Literatura?',['Isabel Allende','Violeta Parra','Gabriela Mistral','Frida Kahlo'],2],
+['¿Cuál es el océano más grande?',['Atlántico','Índico','Pacífico','Ártico'],2],
+['¿Cuál es el planeta más grande del sistema solar?',['Saturno','Júpiter','Neptuno','Tierra'],1],
+['¿Qué gas usan las plantas para hacer fotosíntesis?',['Oxígeno','Nitrógeno','CO₂','Helio'],2],
+['¿Cuántos huesos tiene aprox. un adulto?',['106','206','306','186'],1],
+['¿Cuál es el órgano más grande del cuerpo humano?',['Hígado','Pulmón','Piel','Cerebro'],2],
+['¿De qué está hecho principalmente el pelo?',['Colágeno','Queratina','Calcio','Melanina'],1],
+['¿Qué le da color al pelo?',['Queratina','Melanina','Hemoglobina','Sebo'],1],
+['¿Cuánto crece el pelo al mes, más o menos?',['1 mm','1 cm','5 cm','10 cm'],1],
+['¿Por qué el poste de barbería es rojo y blanco?',['Por una bandera','Los barberos antes hacían sangrías','Por moda de los 80','Por un equipo de fútbol'],1],
+['¿Qué corte es corto a los lados y se difumina hacia arriba?',['Mullet','Fade / degradado','Afro','Mohicano'],1],
+['¿Qué selección ganó la Copa América 2015 y 2016?',['Argentina','Brasil','Chile','Uruguay'],2],
+['¿Cuántos jugadores tiene un equipo de fútbol en cancha?',['9','10','11','12'],2],
+['¿Cada cuántos años es el Mundial de fútbol?',['2','3','4','5'],2],
+['¿Qué jugador chileno es apodado "Rey Arturo"?',['Alexis Sánchez','Arturo Vidal','Claudio Bravo','Gary Medel'],1],
+['¿Dónde fue el Mundial 2022?',['Rusia','Catar','Brasil','EE.UU.'],1],
+['¿Cuál es el río más largo de Chile?',['Biobío','Loa','Maipo','Baker'],1],
+['¿Qué isla chilena es famosa por los moáis?',['Chiloé','Juan Fernández','Rapa Nui','Navarino'],2],
+['¿En qué mes son las Fiestas Patrias en Chile?',['Agosto','Septiembre','Octubre','Julio'],1],
+['¿Cuál es el baile nacional de Chile?',['Tango','Cueca','Cumbia','Salsa'],1],
+['¿Cuántos lados tiene un hexágono?',['5','6','7','8'],1],
+['¿Cuántos grados suman los ángulos de un triángulo?',['90°','180°','270°','360°'],1],
+['¿Qué pesa más: 1 kg de plumas o 1 kg de fierro?',['El fierro','Las plumas','Pesan igual','Depende'],2],
+['Un bus sale a las 14:45 y viaja 1 h 30 min. ¿A qué hora llega?',['16:15','15:75','16:00','16:30'],0],
+['Si 3 cortes cuestan $27.000, ¿cuánto cuestan 5?',['$40.000','$45.000','$50.000','$35.000'],1],
+['¿Qué frase está bien escrita?',['Haber si vienes','A ver si vienes','Aver si vienes','Haver si vienes'],1],
+['¿Cuál es sinónimo de "rápido"?',['Lento','Veloz','Tranquilo','Pesado'],1],
+['¿Cuál es el antónimo de "ganancia"?',['Utilidad','Beneficio','Pérdida','Ingreso'],2],
+['¿Qué animal es el más rápido en tierra?',['León','Guepardo','Caballo','Gacela'],1],
+['¿A qué temperatura hierve el agua al nivel del mar?',['90 °C','100 °C','120 °C','80 °C'],1],
+['¿Cuál es la moneda de Japón?',['Yuan','Won','Yen','Rupia'],2],
+['¿Quién pintó la Mona Lisa?',['Picasso','Da Vinci','Van Gogh','Miguel Ángel'],1],
+['¿Cuántos segundos tiene una hora?',['360','3.600','6.000','1.200'],1],
+['Si ahorras $5.000 al día, ¿cuánto juntas en 30 días?',['$100.000','$150.000','$120.000','$300.000'],1],
+['¿Cuál de estos NO es un mamífero?',['Delfín','Murciélago','Pingüino','Ballena'],2],
+['¿Qué vitamina produce la piel con el sol?',['A','C','D','B12'],2],
+['¿Qué número romano es 50?',['C','L','X','D'],1],
+['¿Cuánto es 7 + 3 × 2?',['20','13','17','12'],1],
+['¿Cuál es el país más grande de Sudamérica?',['Argentina','Perú','Brasil','Colombia'],2]
+];
+function triviaPick(){const tv=db.trivia;let pool=TRIVIA.map((_,i)=>i).filter(i=>!tv.usadas.includes(i));
+  if(!pool.length){tv.usadas=[];pool=TRIVIA.map((_,i)=>i).filter(i=>i!==tv.cur)}
+  tv.cur=pool[Math.floor(Math.random()*pool.length)];tv.usadas.push(tv.cur);tv.res=null;tv.elegida=null;save()}
+function triviaCard(hecho){
+  const tv=db.trivia;
+  if(hecho)return `<div class="mt"><span class="pill gold">🧠 Pregunta lograda · ${tv.ok} aciertos en total</span></div>`;
+  if(tv.cur==null||!TRIVIA[tv.cur])triviaPick();
+  const [q,o,a]=TRIVIA[tv.cur];
+  return `<div class="mt" style="border-top:1px solid var(--line);padding-top:12px">
+    <div class="mut">🧠 Responde bien para sumar el día · ✅ ${tv.ok} · ❌ ${tv.mal}</div>
+    <b style="display:block;margin:8px 0 10px;font-size:16px">${esc(q)}</b>
+    <div class="grid2">${o.map((x,i)=>{let st='';if(tv.res==='mal'){if(i===a)st='border-color:var(--ok);color:var(--ok)';else if(i===tv.elegida)st='border-color:var(--bad);color:var(--bad)'}
+      return `<button class="chip" style="text-align:left;color:var(--txt);${st}" ${tv.res?'disabled':''} onclick="responder(${i})">${esc(x)}</button>`}).join('')}</div>
+    ${tv.res==='mal'?`<button class="btn block mt" onclick="triviaPick();render()">🔄 Otra pregunta</button>`:''}</div>`}
+function responder(i){const tv=db.trivia;if(tv.res)return;const a=TRIVIA[tv.cur][2];
+  if(i===a){tv.ok++;mark('trivia');tv.cur=null;tv.res=null;save();render();const s=streak();toast(`✅ ¡Correcto! Racha de ${s} día${s>1?'s':''} 🔥`)}
+  else{tv.mal++;tv.res='mal';tv.elegida=i;save();render();toast('❌ Casi. Prueba con otra')}}
+function elegirGasto(){openSheet(`<h2 class="goldtxt">¿Qué gasto?</h2><div class="quick">
+  <button onclick="formGasto('negocio')"><span>🧾</span>Costo negocio</button>
+  <button onclick="formGasto('personal')"><span>👛</span>Gasto personal</button></div>`)}
+
 /* --- Foto del día --- */
 function takePhoto(){closeSheet();$('#photoIn').click()}
 $('#photoIn').addEventListener('change',e=>{
@@ -602,7 +688,7 @@ $('#photoIn').addEventListener('change',e=>{
   r.onload=()=>{const img=new Image();img.onload=()=>{const c=document.createElement('canvas');const s=360/Math.max(img.width,img.height);
     c.width=img.width*s;c.height=img.height*s;c.getContext('2d').drawImage(img,0,0,c.width,c.height);
     db.fotos.push({fecha:today(),img:c.toDataURL('image/jpeg',.6)});if(db.fotos.length>60)db.fotos.shift();
-    mark('foto');save();render();toast(`📸 ¡Racha de ${streak()} días! 🔥`)};img.src=r.result};r.readAsDataURL(f);e.target.value=''});
+    mark('foto');save();render();toast('📸 Foto guardada')};img.src=r.result};r.readAsDataURL(f);e.target.value=''});
 
 /* --- Respaldo --- */
 function exportar(){db.cfg.ultBackup=today();save();

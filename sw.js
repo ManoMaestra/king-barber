@@ -1,6 +1,6 @@
 // Cache de la app para que funcione sin internet.
 // Al publicar una actualización, subir VERSION: los datos del usuario (localStorage) no se tocan.
-const VERSION = 'kb-v1';
+const VERSION = 'kb-v2';
 const FILES = ['./', './index.html', './logo.jpg', './manifest.json'];
 
 self.addEventListener('install', e => {
