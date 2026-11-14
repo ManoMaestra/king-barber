@@ -157,7 +157,7 @@ const DEF={
     {id:uid(),n:'Cera',stock:6,min:2,u:'un',porCorte:0},
     {id:uid(),n:'Shampoo',stock:3,min:1,u:'un',porCorte:0}
   ],
-  cfg:{diasInactivo:14,sellos:10,nombre:'King Barber',
+  cfg:{diasInactivo:14,sellos:10,nombre:'King Barber',premios:[{n:5,p:'Ceja gratis'},{n:10,p:'Corte gratis'}],
     msgVuelta:'Hola {nombre}! 💈 Hace {dias} días que no pasas por King Barber. ¿Te agendo un corte esta semana? 👑',
     msgCumple:'¡Feliz cumpleaños {nombre}! 🎉👑 De regalo en King Barber tienes 20% de descuento en tu corte este mes.',
     msgRecordatorio:'Hola {nombre}! 💈 Te recuerdo tu hora en King Barber mañana {fecha} a las {hora}. ¡Te espero! 👑',
@@ -207,12 +207,18 @@ function fill(t,o){return t.replace(/\{(\w+)\}/g,(m,k)=>o[k]??m)}
 function lastVisit(id){let m=null;for(const v of db.ventas)if(v.clienteId===id&&(!m||v.fecha>m))m=v.fecha;return m}
 /* Tarjeta de fidelidad: cuenta solo desde que Diego la inicia para ese cliente (c.tarjetaTs).
    Sellos = cortes pagados desde el inicio − cortes gratis ya canjeados × meta. Con sellos ≥ meta, el próximo es gratis. */
+/* Premios de la tarjeta (configurables): el corte número n trae el premio p. El último (meta) es el corte gratis y
+   reinicia la tarjeta. visits() = sellos de la tarjeta actual (1..meta); tras completar, el siguiente corte vuelve a 1. */
+const premios=()=>[...(db.cfg.premios||[])].filter(x=>+x.n>0).sort((a,b)=>a.n-b.n);
+const meta=()=>Math.max(2,...premios().map(x=>+x.n));
+const premioEn=n=>premios().find(x=>+x.n===n);
 function visits(id){const c=cli(id);if(!c||!c.tarjetaTs)return 0;
-  const V=db.ventas.filter(v=>v.clienteId===id&&v.tipo!=='producto'&&(+v.ts||0)>=c.tarjetaTs);
-  return Math.max(0,V.filter(v=>!v.gratis).length-db.cfg.sellos*V.filter(v=>v.gratis).length)}
+  const t=db.ventas.filter(v=>v.clienteId===id&&v.tipo!=='producto'&&(+v.ts||0)>=c.tarjetaTs).length;
+  return t?((t-1)%meta())+1:0}
+const proximo=id=>{const n=visits(id);return n>=meta()?1:n+1};
 const tieneTarjeta=id=>!!(cli(id)||{}).tarjetaTs;
 function iniciarTarjeta(id,ts){const c=cli(id);c.tarjetaTs=ts||Date.now();save();render();
-  if(c.tel)openSheet(`<h2 class="goldtxt">⭐ Tarjeta iniciada</h2><div class="card"><div class="stamps">${sellos(visits(id))}</div><div class="mut mt">${esc(c.nombre)} lleva ${Math.min(visits(id),db.cfg.sellos)} de ${db.cfg.sellos}</div></div>
+  if(c.tel)openSheet(`<h2 class="goldtxt">⭐ Tarjeta iniciada</h2><div class="card"><div class="stamps">${sellos(visits(id))}</div><div class="mut mt">${esc(c.nombre)} lleva ${visits(id)} de ${meta()}</div></div>
     <button class="btn wa block" onclick="waSello('${id}');closeSheet()">💬 Enviar tarjeta por WhatsApp</button><button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);
   else{closeSheet();toast('⭐ Tarjeta iniciada')}}
 function reiniciarTarjeta(id){if(!confirm('¿Reiniciar la tarjeta? Los sellos vuelven a 0.'))return;iniciarTarjeta(id,Date.now())}
@@ -362,9 +368,9 @@ VIEWS.clientes=()=>{
     .map(c=>({c,lv:lastVisit(c.id)})).sort((a,b)=>a.c.nombre.localeCompare(b.c.nombre));
   return `<div class="between" style="margin-bottom:10px"><h2 class="goldtxt" style="margin:0">Clientes</h2><button class="btn sm" onclick="formCliente()">+ Cliente</button></div>
   <input class="search" placeholder="🔍 Buscar nombre o teléfono" value="${esc(sub.q||'')}" oninput="sub.q=this.value;clearTimeout(window._qs);window._qs=setTimeout(()=>{render();const i=$('.search');i.focus();i.setSelectionRange(i.value.length,i.value.length)},250)">
-  <div class="card">${list.length?list.map(({c,lv})=>{const n=Math.min(visits(c.id),db.cfg.sellos);
+  <div class="card">${list.length?list.map(({c,lv})=>{const n=visits(c.id);
     return `<div class="row" onclick="verCliente('${c.id}')"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b>
-    <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'}${tieneTarjeta(c.id)?` · ⭐ ${n}/${db.cfg.sellos}`:''}</span></div>
+    <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'}${tieneTarjeta(c.id)?` · ⭐ ${n}/${meta()}`:''}</span></div>
     ${deuda(c.id)?`<span class="pill red">Fió ${money(deuda(c.id))}</span>`:''}
     ${lv&&diffDays(lv,today())>db.cfg.diasInactivo?'<span class="pill red">Inactivo</span>':''}</div>`}).join(''):'<div class="empty">Aún no hay clientes</div>'}</div>`;
 };
@@ -392,8 +398,10 @@ VIEWS.whatsapp=()=>{
     <div class="card"><h3>💈 No vienen hace +${db.cfg.diasInactivo} días</h3>${p.ina.length?p.ina.map(({c,lv})=>`<div class="row"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b><span>Hace ${diffDays(lv,today())} días${c.ultContacto?` · Escrito ${fmtD(c.ultContacto)}`:''}</span></div><button class="btn sm wa" onclick="waVuelta('${c.id}')">Escribir</button></div>`).join(''):'<div class="empty">Todos al día 👑</div>'}</div>`;
   }else if(tab==='fidel'){
     const list=db.clientes.filter(c=>c.tarjetaTs).map(c=>({c,n:visits(c.id)})).sort((a,b)=>b.n-a.n);
-    body=`<div class="card"><div class="mut">Cada ${db.cfg.sellos} cortes, el siguiente es gratis. La tarjeta cuenta solo desde que tú la inicias: al registrar un corte o en la ficha del cliente toca “⭐ Iniciar tarjeta”.</div></div>
-    <div class="card">${list.length?list.map(({c,n})=>{const premio=n>=db.cfg.sellos;return `<div class="row"><div class="main"><b>${esc(c.nombre)} ${premio?'<span class="pill gold">🎁 Próximo gratis</span>':''}</b><span class="stamps">${sellos(n)}</span></div><button class="btn sm wa" onclick="waSello('${c.id}')">Enviar</button></div>`}).join(''):'<div class="empty">Ningún cliente con tarjeta. Iníciala desde la ficha del cliente.</div>'}</div>`;
+    body=`<div class="card"><div class="mut">La tarjeta cuenta solo desde que tú la inicias: al registrar un corte o en la ficha del cliente toca “⭐ Iniciar tarjeta”.</div>
+    <div class="mt">${premios().map(x=>`<span class="pill gold">Corte ${x.n}: ${esc(x.p)}</span> `).join('')}</div>
+    <button class="btn sec block mt" onclick="editarPremios()">✏️ Cambiar premios</button></div>
+    <div class="card">${list.length?list.map(({c,n})=>{const pr=premioEn(n>=meta()?1:n+1);return `<div class="row"><div class="main"><b>${esc(c.nombre)} ${pr?`<span class="pill gold">🎁 Próximo: ${esc(pr.p)}</span>`:''}</b><span class="stamps">${sellos(n)}</span></div><button class="btn sm wa" onclick="waSello('${c.id}')">Enviar</button></div>`}).join(''):'<div class="empty">Ningún cliente con tarjeta. Iníciala desde la ficha del cliente.</div>'}</div>`;
   }else{
     body=`<div class="card"><h3>Plantillas</h3><div class="mut">Usa {nombre}, {dias}, {fecha}, {hora}, {sellos}, {n}, {meta}, {falta}</div>
     <label>Volver a cortarse</label><textarea id="m1">${esc(db.cfg.msgVuelta)}</textarea>
@@ -402,13 +410,12 @@ VIEWS.whatsapp=()=>{
     <label>Recordatorio de fiado</label><textarea id="m7">${esc(db.cfg.msgFiado)}</textarea>
     <label>Tarjeta de sellos</label><textarea id="m4">${esc(db.cfg.msgSello)}</textarea>
     <label>Días para considerar inactivo</label><input id="m5" type="number" inputmode="numeric" value="${db.cfg.diasInactivo}">
-    <label>Cortes para premio</label><input id="m6" type="number" inputmode="numeric" value="${db.cfg.sellos}">
     <button class="btn block mt" onclick="saveMsgs()">Guardar</button></div>`;
   }
   return `<h2 class="goldtxt" style="margin:0 0 10px">WhatsApp</h2><div class="tabs">${tabs.map(([k,l])=>`<div class="tab ${tab===k?'on':''}" onclick="go('whatsapp','${k}')">${l}${k==='pend'&&p.total?` · ${p.total}`:''}</div>`).join('')}</div>${body}`;
 };
 
-function sellos(n){const m=db.cfg.sellos;const s=Math.min(n,m);return '✂️'.repeat(s)+'⚪'.repeat(m-s)}
+function sellos(n){const m=meta();let o='';for(let i=1;i<=m;i++)o+=i<=n?'✂️':(premioEn(i)?'🎁':'⚪');return o}
 
 VIEWS.finanzas=()=>{
   const tab=sub.finanzas||'resumen';
@@ -550,7 +557,9 @@ function formVenta(id,pre){
   chkGratis();
 }
 function chkGratis(){const c=val('vC');const e=$('#vGr'),g=$('#vG');if(!e||!g||g.dataset.edit)return;
-  if(c&&visits(c)>=db.cfg.sellos){e.innerHTML='<div class="pill gold mt" style="display:inline-block">🎁 Este cliente tiene corte gratis</div>';g.checked=true;g.dataset.auto=1}
+  const pr=c&&tieneTarjeta(c)?premioEn(proximo(c)):null;
+  if(pr&&proximo(c)===meta()){e.innerHTML=`<div class="pill gold mt" style="display:inline-block">🎁 Corte ${meta()}: ${esc(pr.p)}</div>`;g.checked=true;g.dataset.auto=1}
+  else if(pr){e.innerHTML=`<div class="pill gold mt" style="display:inline-block">🎁 Este corte (${proximo(c)}°) incluye: ${esc(pr.p)}</div>`;if(g.dataset.auto){g.checked=false;delete g.dataset.auto}}
   else{e.innerHTML='';if(g.dataset.auto){g.checked=false;delete g.dataset.auto}}}
 
 function pickServ(el){[...el.parentNode.children].forEach(c=>c.classList.remove('on'));el.classList.add('on');$('#vM').value=el.dataset.p}
@@ -577,8 +586,10 @@ function saveVenta(id,citaId){
   if(!id&&cid){const k=cli(cid);
     if(!tieneTarjeta(cid))openSheet(`<h2 class="goldtxt">✅ Venta guardada</h2><div class="card"><div class="mut">${esc(k.nombre)} aún no tiene tarjeta de fidelidad.</div></div>
       <button class="btn block" onclick="iniciarTarjeta('${cid}',${nueva.ts})">⭐ Iniciar tarjeta con este corte</button><button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);
-    else if(k.tel)openSheet(`<h2 class="goldtxt">✅ Venta guardada</h2><div class="card"><div class="stamps">${sellos(visits(cid))}</div><div class="mut mt">${esc(k.nombre)} lleva ${Math.min(visits(cid),db.cfg.sellos)} de ${db.cfg.sellos}</div></div>
-    <button class="btn wa block" onclick="waSello('${cid}');closeSheet()">💬 Enviar tarjeta por WhatsApp</button><button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);else toast('✅ Venta guardada')}
+    else if(k.tel)openSheet(`<h2 class="goldtxt">✅ Venta guardada</h2><div class="card"><div class="stamps">${sellos(visits(cid))}</div><div class="mut mt">${esc(k.nombre)} lleva ${visits(cid)} de ${meta()}</div></div>
+    <button class="btn wa block" onclick="waSello('${cid}');closeSheet()">💬 Enviar tarjeta por WhatsApp</button>
+    ${visits(cid)>1?`<button class="btn sec block mt" onclick="if(confirm('¿Empezar la tarjeta desde este corte? Quedará en 1.'))iniciarTarjeta('${cid}',${nueva.ts})">↺ Empezar tarjeta desde este corte (1)</button>`:''}
+    <button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);else toast('✅ Venta guardada')}
   else toast('✅ Venta guardada');
 }
 
@@ -633,7 +644,7 @@ function verCliente(id){
   <div class="grid3 mt"><div class="kpi"><div class="l">Visitas</div><div class="v">${V.length}</div></div><div class="kpi"><div class="l">Total</div><div class="v" style="font-size:16px">${money(tot)}</div></div><div class="kpi"><div class="l">Última</div><div class="v" style="font-size:16px">${lv?diffDays(lv,today())+'d':'—'}</div></div></div>
   ${deuda(id)?`<div class="card mt" style="border-color:#5a2a27"><div class="between"><h3 style="margin:0;color:#ffb4ae">💸 Fió</h3><b class="neg">${money(deuda(id))}</b></div>
     <div class="grid2 mt"><button class="btn sm wa" onclick="waFiado('${id}')">💬 Recordar</button><button class="btn sm" onclick="pagarFiado('${id}')">Pagó</button></div></div>`:''}
-  <div class="card mt"><h3>Tarjeta ⭐</h3>${c.tarjetaTs?`<div class="stamps">${sellos(visits(id))}</div><div class="mut mt">Desde ${fmtD(dkey(new Date(c.tarjetaTs)))} · ${Math.min(visits(id),db.cfg.sellos)} de ${db.cfg.sellos}</div>
+  <div class="card mt"><h3>Tarjeta ⭐</h3>${c.tarjetaTs?`<div class="stamps">${sellos(visits(id))}</div><div class="mut mt">Desde ${fmtD(dkey(new Date(c.tarjetaTs)))} · ${visits(id)} de ${meta()}</div>
     <div class="grid2 mt"><button class="btn sm wa" onclick="waSello('${id}')">💬 Enviar</button><button class="btn sm sec" onclick="reiniciarTarjeta('${id}')">Reiniciar</button></div>`
     :(()=>{const hoy=V.filter(v=>v.tipo!=='producto'&&v.fecha===today()).sort((a,b)=>(b.ts||0)-(a.ts||0))[0];
       return `<div class="mut">Sin tarjeta todavía.</div>${hoy?`<button class="btn block mt" onclick="iniciarTarjeta('${id}',${+hoy.ts||0})">⭐ Iniciar con el corte de hoy</button>`:''}
@@ -757,10 +768,24 @@ function delItem(col,id){if(!confirm('¿Eliminar? No se puede deshacer.'))return
 function waVuelta(id){const c=cli(id);const lv=lastVisit(id);if(wa(c.tel,fill(db.cfg.msgVuelta,{nombre:c.nombre.split(' ')[0],dias:diffDays(lv,today())}))){c.ultContacto=today();save();setTimeout(render,400)}}
 function waCumple(id){const c=cli(id);if(wa(c.tel,fill(db.cfg.msgCumple,{nombre:c.nombre.split(' ')[0]}))){c.cumpleEnviado=today().slice(0,4);save();setTimeout(render,400)}}
 function waRec(id){const a=db.citas.find(x=>x.id===id);const c=cli(a.clienteId)||{};if(wa(c.tel,fill(db.cfg.msgRecordatorio,{nombre:(c.nombre||'').split(' ')[0],fecha:fmtD(a.fecha),hora:a.hora}))){a.recordado=true;save();setTimeout(render,400)}}
-function waSello(id){const c=cli(id);const n=visits(id);const m=db.cfg.sellos;const s=Math.min(n,m);
-  wa(c.tel,fill(db.cfg.msgSello,{nombre:c.nombre.split(' ')[0],sellos:sellos(n),n:s,meta:m,falta:s>=m?'🎁 ¡Tu próximo corte es GRATIS!':`Te faltan ${m-s} para un corte gratis.`}))}
+function waSello(id){const c=cli(id);const n=visits(id);const m=meta();
+  const gano=premioEn(n),sig=premios().find(x=>+x.n>n);
+  let falta=gano?`🎁 ¡Ganaste: ${gano.p}!`:'';
+  if(sig)falta+=(falta?' ':'')+(sig.n-n===1?`🎁 ¡En tu próximo corte: ${sig.p}!`:`Te faltan ${sig.n-n} para: ${sig.p}.`);
+  else falta+=(falta?' ':'')+'¡Completaste tu tarjeta! Empiezas una nueva 👑';
+  wa(c.tel,fill(db.cfg.msgSello,{nombre:c.nombre.split(' ')[0],sellos:sellos(n),n,meta:m,falta}))}
+function editarPremios(){const P=premios();
+  openSheet(`<h2 class="goldtxt">⭐ Premios de la tarjeta</h2><div class="mut">El número es el corte que trae el premio. El más alto es el corte gratis y ahí la tarjeta vuelve a empezar.</div>
+  <div id="prL">${P.map(x=>filaPremio(x)).join('')}</div>
+  <button class="btn sec block mt" onclick="$('#prL').insertAdjacentHTML('beforeend',filaPremio({n:'',p:''}))">+ Premio</button>
+  <button class="btn block mt" onclick="savePremios()">Guardar</button>`)}
+const filaPremio=x=>`<div class="flex prF mt"><input class="prN" type="number" inputmode="numeric" placeholder="N°" value="${x.n}" style="width:80px;flex:none"><input class="prP" placeholder="Ej: Ceja gratis" value="${esc(x.p)}"><button class="btn sm del" style="margin:0" onclick="this.parentNode.remove()">✕</button></div>`;
+function savePremios(){const P=[...document.querySelectorAll('.prF')].map(f=>({n:Math.floor(+f.querySelector('.prN').value||0),p:f.querySelector('.prP').value.trim()})).filter(x=>x.n>0&&x.p);
+  if(!P.length){toast('Agrega al menos un premio');return}
+  if(new Set(P.map(x=>x.n)).size!==P.length){toast('Hay dos premios en el mismo corte');return}
+  db.cfg.premios=P;db.cfg.sellos=meta();save();closeSheet();render();toast('✅ Premios guardados')}
 function saveMsgs(){db.cfg.msgVuelta=val('m1');db.cfg.msgCumple=val('m2');db.cfg.msgRecordatorio=val('m3');db.cfg.msgSello=val('m4');db.cfg.msgFiado=val('m7')||db.cfg.msgFiado;
-  db.cfg.diasInactivo=Math.max(1,+val('m5')||14);db.cfg.sellos=Math.max(2,+val('m6')||10);save();render();toast('✅ Guardado')}
+  db.cfg.diasInactivo=Math.max(1,+val('m5')||14);save();render();toast('✅ Guardado')}
 
 /* ====================== FIADO ====================== */
 function waFiado(id){const c=cli(id);wa(c.tel,fill(db.cfg.msgFiado,{nombre:c.nombre.split(' ')[0],monto:money(deuda(id))}))}
