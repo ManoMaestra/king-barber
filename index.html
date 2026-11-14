@@ -156,6 +156,7 @@ const DEF={
     msgVuelta:'Hola {nombre}! 💈 Hace {dias} días que no pasas por King Barber. ¿Te agendo un corte esta semana? 👑',
     msgCumple:'¡Feliz cumpleaños {nombre}! 🎉👑 De regalo en King Barber tienes 20% de descuento en tu corte este mes.',
     msgRecordatorio:'Hola {nombre}! 💈 Te recuerdo tu hora en King Barber mañana {fecha} a las {hora}. ¡Te espero! 👑',
+    msgFiado:'Hola {nombre}! 👑 Te recuerdo que quedó pendiente {monto} en King Barber. Cuando puedas me transfieres 🙏💈',
     msgSello:'¡Gracias {nombre}! 👑 Tu tarjeta King Barber:\n{sellos}\nLlevas {n} de {meta}. {falta}\nGuarda este número para agendar 💈'}
 };
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
@@ -212,6 +213,15 @@ function bestStreak(){
   const ks=Object.keys(db.actividad).filter(okDay).sort();let b=0,c=0,prev=null;
   for(const k of ks){c=(prev&&diffDays(prev,k)===1)?c+1:1;b=Math.max(b,c);prev=k}return b}
 function monthSum(arr,ym,f){return arr.filter(x=>x.fecha.startsWith(ym)).reduce((s,x)=>s+f(x),0)}
+const MEDIOS=['Efectivo','Transferencia','Tarjeta','Fiado'];
+/* Fiado: venta hecha pero no pagada. Queda como deuda del cliente hasta marcarla pagada. */
+const deuda=id=>db.ventas.filter(v=>v.clienteId===id&&v.pago==='Fiado').reduce((s,v)=>s+ventaTotal(v),0);
+const fiados=()=>db.clientes.map(c=>({c,m:deuda(c.id)})).filter(x=>x.m>0).sort((a,b)=>b.m-a.m);
+/* Cumpleaños con día y mes (sin año: más fácil en el celular). Se guarda como 2000-MM-DD. */
+function cumpleInputs(pre,v){const d=v?+v.slice(8,10):0,m=v?+v.slice(5,7):0;
+  return `<div class="grid2"><select id="${pre}D"><option value="">Día</option>${Array.from({length:31},(_,i)=>`<option ${i+1===d?'selected':''}>${i+1}</option>`).join('')}</select>
+  <select id="${pre}M"><option value="">Mes</option>${MES.map((x,i)=>`<option value="${i+1}" ${i+1===m?'selected':''}>${x}</option>`).join('')}</select></div>`}
+function cumpleVal(pre){const d=+val(pre+'D'),m=+val(pre+'M');return d&&m?`2000-${pad(m)}-${pad(d)}`:''}
 const ventaTotal=v=>(v.gratis?0:+v.monto||0)+(+v.propina||0);
 const pn=p=>p?(p.n+(p.det?' '+p.det:'')):'Producto';
 const prod=id=>db.productos.find(p=>p.id===id);
@@ -280,6 +290,10 @@ VIEWS.inicio=()=>{
     <div class="kpi"><div class="l">Costos mes</div><div class="v neg">${money(gasMes)}</div></div>
     <div class="kpi"><div class="l">Gastos personales</div><div class="v">${money(perMes)}</div></div>
   </div>
+  ${(()=>{const F=fiados();if(!F.length)return '';return `<div class="card" style="border-color:#5a2a27">
+    <div class="between"><h3 style="margin:0;color:#ffb4ae">💸 Fiado · te deben</h3><b class="neg">${money(F.reduce((s,x)=>s+x.m,0))}</b></div>
+    ${F.map(({c,m})=>`<div class="row"><div class="av">${ini(c.nombre)}</div><div class="main" onclick="verCliente('${c.id}')"><b>${esc(c.nombre)}</b><span>Fió ${money(m)}</span></div>
+    <button class="btn sm wa" onclick="waFiado('${c.id}')">💬</button><button class="btn sm" onclick="pagarFiado('${c.id}')">Pagó</button></div>`).join('')}</div>`})()}
   ${p.total?`<div class="card" onclick="go('whatsapp')" style="cursor:pointer;border-color:#1f5a34">
     <div class="between"><h3 style="margin:0;color:var(--wa)">💬 WhatsApp pendientes</h3><span class="pill">${p.total}</span></div>
     <div class="mut mt">${[p.rec.length&&`${p.rec.length} recordatorio(s) de mañana`,p.cum.length&&`${p.cum.length} cumpleaños`,p.ina.length&&`${p.ina.length} cliente(s) por volver`].filter(Boolean).join(' · ')}</div></div>`:''}
@@ -324,6 +338,7 @@ VIEWS.clientes=()=>{
   <div class="card">${list.length?list.map(({c,lv})=>{const n=visits(c.id)%db.cfg.sellos;
     return `<div class="row" onclick="verCliente('${c.id}')"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b>
     <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'} · ⭐ ${n}/${db.cfg.sellos}</span></div>
+    ${deuda(c.id)?`<span class="pill red">Fió ${money(deuda(c.id))}</span>`:''}
     ${lv&&diffDays(lv,today())>db.cfg.diasInactivo?'<span class="pill red">Inactivo</span>':''}</div>`}).join(''):'<div class="empty">Aún no hay clientes</div>'}</div>`;
 };
 
@@ -357,6 +372,7 @@ VIEWS.whatsapp=()=>{
     <label>Volver a cortarse</label><textarea id="m1">${esc(db.cfg.msgVuelta)}</textarea>
     <label>Cumpleaños</label><textarea id="m2">${esc(db.cfg.msgCumple)}</textarea>
     <label>Recordatorio de cita</label><textarea id="m3">${esc(db.cfg.msgRecordatorio)}</textarea>
+    <label>Recordatorio de fiado</label><textarea id="m7">${esc(db.cfg.msgFiado)}</textarea>
     <label>Tarjeta de sellos</label><textarea id="m4">${esc(db.cfg.msgSello)}</textarea>
     <label>Días para considerar inactivo</label><input id="m5" type="number" inputmode="numeric" value="${db.cfg.diasInactivo}">
     <label>Cortes para premio</label><input id="m6" type="number" inputmode="numeric" value="${db.cfg.sellos}">
@@ -474,12 +490,12 @@ function formVenta(id,pre){
   openSheet(`<h2 class="goldtxt">${id?'Editar venta':'Nueva venta'}</h2>
   ${id?'':`<div class="tabs"><div class="tab on">✂️ Servicio</div><div class="tab" onclick="formVentaProd(null,{clienteId:val('vC')})">👕 Producto</div></div>`}
   <label>Cliente</label><select id="vC" onchange="chkGratis()">${cliOptions(v.clienteId)}</select>
-  <div id="vNew" style="${v.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="vN" placeholder="Opcional"></div><div><label>WhatsApp</label><input id="vT" inputmode="tel" placeholder="9 1234 5678"></div></div></div>
+  <div id="vNew" style="${v.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="vN" placeholder="Opcional"></div><div><label>WhatsApp</label><input id="vT" inputmode="tel" placeholder="9 1234 5678"></div></div><label>Cumpleaños (opcional)</label>${cumpleInputs('vB','')}</div>
   <div id="vGr"></div>
   <label>Servicio</label><div class="chips" id="vS">${db.servicios.map(s=>`<div class="chip ${s.n===sv?'on':''}" data-n="${esc(s.n)}" data-p="${s.p}" onclick="pickServ(this)">${esc(s.n)}<small>${money(s.p)}</small></div>`).join('')}</div>
   <div class="grid2"><div><label>Precio</label><input id="vM" type="number" inputmode="numeric" value="${v.monto??(db.servicios.find(s=>s.n===sv)||{}).p??''}"></div>
   <div><label>Propina</label><input id="vP" type="number" inputmode="numeric" value="${v.propina||''}" placeholder="0"></div></div>
-  <label>Pago</label><div class="chips" id="vPg">${['Efectivo','Transferencia','Tarjeta'].map(p=>`<div class="chip ${p===v.pago?'on':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${p}</div>`).join('')}</div>
+  <label>Pago</label><div class="chips" id="vPg">${MEDIOS.map(p=>`<div class="chip ${p===v.pago?'on':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${p}</div>`).join('')}</div>
   <label class="flex" style="margin-top:12px"><input type="checkbox" id="vG" style="width:22px;height:22px" ${v.gratis?'checked':''} ${id?'data-edit="1"':''}> Corte gratis (premio tarjeta)</label>
   <label>Fecha</label><input id="vF" type="date" value="${v.fecha}">
   <button class="btn block mt" id="btnGuardar" data-txt="Guardar venta" onclick="saveVenta('${id||''}','${v.citaId||''}')">Guardar venta</button>
@@ -497,8 +513,9 @@ function saveVenta(id,citaId){
     db.inventario.forEach(i=>{if(+i.porCorte)i.stock=+i.stock+ +i.porCorte}); // devuelve la navaja descontada
     save();closeSheet();render();toast('🗑️ Venta eliminada');return}
   let cid=val('vC');
-  if(!cid&&val('vN')){const c={id:uid(),nombre:val('vN'),tel:val('vT'),cumple:'',notas:'',alta:today()};db.clientes.push(c);cid=c.id}
+  if(!cid&&val('vN')){const c={id:uid(),nombre:val('vN'),tel:val('vT'),cumple:cumpleVal('vB'),notas:'',alta:today()};db.clientes.push(c);cid=c.id}
   const s=$('#vS .on'),p=$('#vPg .on');
+  if(p&&p.textContent==='Fiado'&&!cid){toast('Para fiar, elige o crea el cliente');return}
   const o={clienteId:cid,servicio:s?s.dataset.n:'Servicio',monto:+val('vM')||0,propina:+val('vP')||0,pago:p?p.textContent:'Efectivo',gratis:$('#vG').checked,fecha:val('vF')||today()};
   if(id){Object.assign(db.ventas.find(x=>x.id===id),o)}
   else{
@@ -546,7 +563,7 @@ function formCliente(id){
   <label>Nombre</label><input id="cN" value="${esc(c.nombre||'')}">
   <label>WhatsApp</label><input id="cT" inputmode="tel" value="${esc(c.tel||'')}" placeholder="9 1234 5678">
   ${'contacts' in navigator&&'ContactsManager' in window?'<button class="btn sec sm mt" onclick="pickContact()">📇 Elegir de contactos</button>':''}
-  <label>Cumpleaños</label><input id="cB" type="date" value="${c.cumple||''}">
+  <label>Cumpleaños</label>${cumpleInputs('cB',c.cumple)}
   <label>Notas (corte preferido, etc.)</label><textarea id="cO">${esc(c.notas||'')}</textarea>
   <button class="btn block mt" onclick="saveCliente('${id||''}')">Guardar</button>
   ${id?`<button class="btn del block mt" onclick="delItem('clientes','${id}')">Eliminar cliente</button>`:''}`);
@@ -554,7 +571,7 @@ function formCliente(id){
 async function pickContact(){try{const[r]=await navigator.contacts.select(['name','tel'],{multiple:false});if(r){if(r.name&&r.name[0])$('#cN').value=r.name[0];if(r.tel&&r.tel[0])$('#cT').value=r.tel[0]}}catch(e){}}
 function saveCliente(id){
   const n=val('cN');if(!n){toast('Falta el nombre');return}
-  const o={nombre:n,tel:val('cT'),cumple:val('cB'),notas:val('cO')};
+  const o={nombre:n,tel:val('cT'),cumple:cumpleVal('cB'),notas:val('cO')};
   if(id)Object.assign(cli(id),o);else db.clientes.push({id:uid(),alta:today(),...o});
   save();closeSheet();render();toast('✅ Cliente guardado');
 }
@@ -564,6 +581,8 @@ function verCliente(id){
   const prox=db.citas.filter(x=>x.clienteId===id&&x.fecha>=today()).sort((a,b)=>a.fecha.localeCompare(b.fecha))[0];
   openSheet(`<div class="flex"><div class="av" style="width:54px;height:54px;font-size:20px">${ini(c.nombre)}</div><div><h2 class="goldtxt" style="margin:0">${esc(c.nombre)}</h2><div class="mut">${esc(c.tel||'Sin teléfono')}${c.cumple?` · 🎂 ${c.cumple.slice(8)} ${MES[+c.cumple.slice(5,7)-1]}`:''}</div></div></div>
   <div class="grid3 mt"><div class="kpi"><div class="l">Visitas</div><div class="v">${V.length}</div></div><div class="kpi"><div class="l">Total</div><div class="v" style="font-size:16px">${money(tot)}</div></div><div class="kpi"><div class="l">Última</div><div class="v" style="font-size:16px">${lv?diffDays(lv,today())+'d':'—'}</div></div></div>
+  ${deuda(id)?`<div class="card mt" style="border-color:#5a2a27"><div class="between"><h3 style="margin:0;color:#ffb4ae">💸 Fió</h3><b class="neg">${money(deuda(id))}</b></div>
+    <div class="grid2 mt"><button class="btn sm wa" onclick="waFiado('${id}')">💬 Recordar</button><button class="btn sm" onclick="pagarFiado('${id}')">Pagó</button></div></div>`:''}
   <div class="card mt"><h3>Tarjeta ⭐</h3><div class="stamps">${sellos(V.length)}</div></div>
   ${c.notas?`<div class="card"><h3>Notas</h3>${esc(c.notas).replace(/\n/g,'<br>')}</div>`:''}
   ${prox?`<div class="card"><h3>Próxima cita</h3>${fmtD(prox.fecha)} · ${prox.hora}</div>`:''}
@@ -579,7 +598,7 @@ function formCita(id,fecha,clienteId){
   const horas=[];for(let h=10;h<=20;h++){horas.push(pad(h)+':00');if(h<20)horas.push(pad(h)+':30')}
   openSheet(`<h2 class="goldtxt">${id?'Editar cita':'Agendar cita'}</h2>
   <label>Cliente</label><select id="aC">${cliOptions(c.clienteId)}</select>
-  <div id="aNew" style="${c.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="aN" value="${esc(c.nombre||'')}"></div><div><label>WhatsApp</label><input id="aT" inputmode="tel"></div></div></div>
+  <div id="aNew" style="${c.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="aN" value="${esc(c.nombre||'')}"></div><div><label>WhatsApp</label><input id="aT" inputmode="tel"></div></div><label>Cumpleaños (opcional)</label>${cumpleInputs('aB','')}</div>
   <label>Día</label><input id="aF" type="date" value="${c.fecha}" onchange="paintHoras()">
   <label>Hora</label><div class="chips" id="aH" data-cur="${c.hora}"></div>
   <input id="aHx" type="time" class="mt" value="${c.hora}" placeholder="Otra hora">
@@ -593,7 +612,7 @@ function paintHoras(){const f=val('aF'),o=_ocup(f),cur=$('#aHx').value;
   $('#aH').innerHTML=_horas.map(h=>{const busy=o.includes(h);return `<div class="chip ${h===cur?'on':''}" style="${busy?'opacity:.3;pointer-events:none;text-decoration:line-through':''}" onclick="[...this.parentNode.children].forEach(x=>x.classList.remove('on'));this.classList.add('on');$('#aHx').value='${h}'">${h}</div>`}).join('')}
 function saveCita(id){
   let cid=val('aC');const h=val('aHx');if(!h){toast('Elige una hora');return}
-  if(!cid){if(!val('aN')){toast('Elige o crea un cliente');return}const c={id:uid(),nombre:val('aN'),tel:val('aT'),cumple:'',notas:'',alta:today()};db.clientes.push(c);cid=c.id}
+  if(!cid){if(!val('aN')){toast('Elige o crea un cliente');return}const c={id:uid(),nombre:val('aN'),tel:val('aT'),cumple:cumpleVal('aB'),notas:'',alta:today()};db.clientes.push(c);cid=c.id}
   const f=val('aF');
   if(db.citas.some(x=>x.fecha===f&&x.hora===h&&x.id!==id)){toast('⚠️ Esa hora ya está ocupada');return}
   const o={clienteId:cid,fecha:f,hora:h,servicio:val('aS')};
@@ -685,8 +704,22 @@ function waCumple(id){const c=cli(id);if(wa(c.tel,fill(db.cfg.msgCumple,{nombre:
 function waRec(id){const a=db.citas.find(x=>x.id===id);const c=cli(a.clienteId)||{};if(wa(c.tel,fill(db.cfg.msgRecordatorio,{nombre:(c.nombre||'').split(' ')[0],fecha:fmtD(a.fecha),hora:a.hora}))){a.recordado=true;save();setTimeout(render,400)}}
 function waSello(id){const c=cli(id);const n=visits(id);const m=db.cfg.sellos;const s=n%m===0&&n>0?m:n%m;
   wa(c.tel,fill(db.cfg.msgSello,{nombre:c.nombre.split(' ')[0],sellos:sellos(n),n:s,meta:m,falta:s>=m?'🎁 ¡Tu próximo corte es GRATIS!':`Te faltan ${m-s} para un corte gratis.`}))}
-function saveMsgs(){db.cfg.msgVuelta=val('m1');db.cfg.msgCumple=val('m2');db.cfg.msgRecordatorio=val('m3');db.cfg.msgSello=val('m4');
+function saveMsgs(){db.cfg.msgVuelta=val('m1');db.cfg.msgCumple=val('m2');db.cfg.msgRecordatorio=val('m3');db.cfg.msgSello=val('m4');db.cfg.msgFiado=val('m7')||db.cfg.msgFiado;
   db.cfg.diasInactivo=Math.max(1,+val('m5')||14);db.cfg.sellos=Math.max(2,+val('m6')||10);save();render();toast('✅ Guardado')}
+
+/* ====================== FIADO ====================== */
+function waFiado(id){const c=cli(id);wa(c.tel,fill(db.cfg.msgFiado,{nombre:c.nombre.split(' ')[0],monto:money(deuda(id))}))}
+function pagarFiado(id){const c=cli(id);const V=db.ventas.filter(v=>v.clienteId===id&&v.pago==='Fiado').sort((a,b)=>a.fecha.localeCompare(b.fecha));
+  openSheet(`<h2 class="goldtxt">${esc(c.nombre)} pagó</h2>
+  <div class="card">${V.map(v=>`<label class="flex" style="margin:0;padding:8px 0;border-bottom:1px solid var(--line);color:var(--txt);font-size:14px"><input type="checkbox" class="fV" value="${v.id}" checked style="width:20px;height:20px" onchange="totFiado()"><span style="flex:1">${fmtD(v.fecha)} · ${esc(v.servicio)}</span><b>${money(ventaTotal(v))}</b></label>`).join('')}
+  <div class="between mt"><b>Total que paga</b><b id="fT" class="pos"></b></div></div>
+  <label>¿Cómo pagó?</label><div class="chips" id="fPg">${MEDIOS.filter(m=>m!=='Fiado').map((m,i)=>`<div class="chip ${i===0?'on':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${m}</div>`).join('')}</div>
+  <button class="btn block mt" onclick="savePagoFiado('${id}')">Registrar pago</button>`);totFiado()}
+function totFiado(){let t=0;document.querySelectorAll('.fV:checked').forEach(x=>{const v=db.ventas.find(y=>y.id===x.value);if(v)t+=ventaTotal(v)});const e=$('#fT');if(e)e.textContent=money(t)}
+function savePagoFiado(id){const ids=[...document.querySelectorAll('.fV:checked')].map(x=>x.value);if(!ids.length){toast('Marca qué pagó');return}
+  const m=($('#fPg .on')||{}).textContent||'Efectivo';
+  db.ventas.forEach(v=>{if(ids.includes(v.id)){v.pago=m;v.pagadoEl=today()}});
+  save();closeSheet();render();toast(`✅ Pago registrado (${m})`)}
 
 /* ====================== TIENDA ====================== */
 function regCompra(p,cant,cu){ // registra lo pagado como gasto de la tienda
@@ -705,7 +738,7 @@ function formVentaProd(id,pre){
   <div><label>Precio c/u</label><input id="pU" type="number" inputmode="numeric" value="${v.unit??''}" oninput="totProd()"></div></div>
   <div class="between mt"><span class="mut">Total</span><b id="pT" class="pos">$0</b></div>
   <label>Cliente (opcional)</label><select id="pC">${cliOptions(v.clienteId)}</select>
-  <label>Pago</label><div class="chips" id="pPg">${['Efectivo','Transferencia','Tarjeta'].map(x=>`<div class="chip ${x===v.pago?'on':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${x}</div>`).join('')}</div>
+  <label>Pago</label><div class="chips" id="pPg">${MEDIOS.map(x=>`<div class="chip ${x===v.pago?'on':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${x}</div>`).join('')}</div>
   <label>Fecha</label><input id="pF" type="date" value="${v.fecha}">
   <button class="btn block mt" id="btnGuardar" data-txt="Guardar venta" onclick="saveVentaProd('${id||''}')">Guardar venta</button>
   ${id?btnBorrar():''}`);
@@ -728,6 +761,7 @@ function saveVentaProd(id){
   if(old){const op=prod(old.productoId);if(op)op.stock=+op.stock+(+old.cant||1)}
   p.stock=+p.stock-cant;
   const pg=$('#pPg .on');
+  if(pg&&pg.textContent==='Fiado'&&!val('pC')){toast('Para fiar, elige el cliente');return}
   const o={tipo:'producto',productoId:p.id,cant,unit,monto:unit*cant,costo:(+p.costo||0)*cant,propina:0,gratis:false,
     servicio:pn(p)+(cant>1?' ×'+cant:''),clienteId:val('pC'),pago:pg?pg.textContent:'Efectivo',fecha:val('pF')||today()};
   if(old)Object.assign(old,o);else{db.ventas.push({id:uid(),ts:Date.now(),...o});mark('venta')}
