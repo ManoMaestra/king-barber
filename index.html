@@ -615,7 +615,7 @@ function verCliente(id){
 function formCita(id,fecha,clienteId){
   const c=id?db.citas.find(x=>x.id===id):{fecha:fecha||today(),hora:'',clienteId:clienteId||''};
   const ocup=f=>db.citas.filter(x=>x.fecha===f&&x.id!==id).map(x=>x.hora);
-  const horas=[];for(let h=10;h<=20;h++){horas.push(pad(h)+':00');if(h<20)horas.push(pad(h)+':30')}
+  const horas=[];for(let h=10;h<=20;h++)for(const m of [0,15,30,45]){if(h===20&&m>0)break;horas.push(pad(h)+':'+pad(m))}
   openSheet(`<h2 class="goldtxt">${id?'Editar cita':'Agendar cita'}</h2>
   <label>Cliente</label><select id="aC">${cliOptions(c.clienteId)}</select>
   <div id="aNew" style="${c.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="aN" value="${esc(c.nombre||'')}"></div><div><label>WhatsApp</label><input id="aT" inputmode="tel"></div></div><label>Cumpleaños (opcional)</label>${cumpleInputs('aB','')}</div>
@@ -672,7 +672,8 @@ async function leerCaptura(blob){
 function leerWA(){
   const raw=val('pw');
   // Quita la hora de envío de cada mensaje (ej: "17:42 ✓✓") para no confundirla con la hora pedida.
-  const limpio=raw.split('\n').map(l=>l.replace(/\s*\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s?m\.?)?\s*[✓✔vV/]*\s*$/i,'')).join('\n');
+  // No se quita si viene después de "a las", "tipo", etc. (ahí es la hora que pide el cliente).
+  const limpio=raw.split('\n').map(l=>l.replace(/(?<!(?:las|la|tipo|de|para)\s*)(?:^|\s+)\d{1,2}[:.]\d{2}\s*(?:[ap]\.?\s?m\.?)?\s*[✓✔vV/]*\s*$/i,'')).join('\n');
   const t=norm(limpio);
   const nt=norm(raw);
   const match=db.clientes.map(c=>({c,full:norm(c.nombre),first:norm(c.nombre).split(' ')[0]}))
@@ -687,7 +688,7 @@ function leerWA(){
   const dm=t.match(/\b(\d{1,2})\s*(?:\/|de\s+)(\d{1,2}|ene\w*|feb\w*|mar\w*|abr\w*|may\w*|jun\w*|jul\w*|ago\w*|sep\w*|oct\w*|nov\w*|dic\w*)/);
   if(dm){let m=isNaN(dm[2])?MES.findIndex(x=>dm[2].startsWith(x))+1:+dm[2];if(m>0){let y=+today().slice(0,4);let c=`${y}-${pad(m)}-${pad(+dm[1])}`;if(c<today())c=`${y+1}-${pad(m)}-${pad(+dm[1])}`;f=c}}
   let h='';const hm=t.match(/(?:a las|las|tipo|a la)\s*(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?/)||t.match(/\b(\d{1,2})[:.](\d{2})\b/)||t.match(/\b(\d{1,2})\s*(am|pm|hrs?)\b/);
-  if(hm){let H=+hm[1],M=hm[2]&&!isNaN(hm[2])?+hm[2]:0;const ap=(hm[3]||hm[2]||'');if((/pm/.test(ap)||H<9)&&H<12)H+=12;h=`${pad(H)}:${pad(M>=30?30:0)}`}
+  if(hm){let H=+hm[1],M=hm[2]&&!isNaN(hm[2])?+hm[2]:0;const ap=(hm[3]||hm[2]||'');if((/pm/.test(ap)||H<9)&&H<12)H+=12;h=`${pad(H)}:${pad(Math.min(45,Math.round(M/15)*15))}`}
   closeSheet();setTimeout(()=>{formCita(null,f,cid);if(guess&&$('#aN'))$('#aN').value=guess;if(h){$('#aHx').value=h;paintHoras()}
     toast(`Leído: ${cid?cli(cid).nombre+' · ':''}${fmtD(f)}${h?' '+h:' (elige hora)'}`)},200);
 }
