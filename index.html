@@ -403,7 +403,14 @@ VIEWS.finanzas=()=>{
 function chMes(n){const[y,m]=sub.mes.split('-').map(Number);const d=new Date(y,m-1+n,1);sub.mes=`${d.getFullYear()}-${pad(d.getMonth()+1)}`;render()}
 
 /* ====================== SHEETS / FORMS ====================== */
-function openSheet(h){$('#sheet').innerHTML='<div class="grab"></div>'+h;$('#sheetbg').classList.add('open')}
+function openSheet(h){window._borrar=false;$('#sheet').innerHTML='<div class="grab"></div>'+h;$('#sheetbg').classList.add('open')}
+/* Eliminar venta/gasto en dos pasos: se marca y solo se borra al tocar Guardar. Cerrar sin guardar no borra nada. */
+const btnBorrar=()=>`<button class="btn del block mt" id="btnBorrar" onclick="marcarBorrar()">🗑️ Eliminar</button>`;
+function marcarBorrar(){window._borrar=!window._borrar;const b=$('#btnBorrar'),g=$('#btnGuardar');
+  b.innerHTML=window._borrar?'↩️ Deshacer: no eliminar':'🗑️ Eliminar';
+  g.innerHTML=window._borrar?'Guardar (se eliminará)':g.dataset.txt;
+  g.style.background=window._borrar?'var(--bad)':'';g.style.color=window._borrar?'#fff':'';
+  if(window._borrar)toast('Toca Guardar para confirmar la eliminación')}
 function closeSheet(){$('#sheetbg').classList.remove('open')}
 function val(id){const e=document.getElementById(id);return e?e.value.trim():''}
 function cliOptions(sel){return `<option value="">— Sin cliente / nuevo —</option>`+[...db.clientes].sort((a,b)=>a.nombre.localeCompare(b.nombre)).map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${esc(c.nombre)}</option>`).join('')}
@@ -430,8 +437,8 @@ function formVenta(id,pre){
   <label>Pago</label><div class="chips" id="vPg">${['Efectivo','Transferencia','Tarjeta'].map(p=>`<div class="chip ${p===v.pago?'on':''}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${p}</div>`).join('')}</div>
   <label class="flex" style="margin-top:12px"><input type="checkbox" id="vG" style="width:22px;height:22px" ${v.gratis?'checked':''} ${id?'data-edit="1"':''}> Corte gratis (premio tarjeta)</label>
   <label>Fecha</label><input id="vF" type="date" value="${v.fecha}">
-  <button class="btn block mt" onclick="saveVenta('${id||''}','${v.citaId||''}')">Guardar venta</button>
-  ${id?`<button class="btn del block mt" onclick="delItem('ventas','${id}')">Eliminar</button>`:''}`);
+  <button class="btn block mt" id="btnGuardar" data-txt="Guardar venta" onclick="saveVenta('${id||''}','${v.citaId||''}')">Guardar venta</button>
+  ${id?btnBorrar():''}`);
   $('#vC').addEventListener('change',e=>$('#vNew').style.display=e.target.value?'none':'');
   chkGratis();
 }
@@ -440,6 +447,10 @@ function chkGratis(){const c=val('vC');const e=$('#vGr'),g=$('#vG');if(!e||!g||g
   else{e.innerHTML='';if(g.dataset.auto){g.checked=false;delete g.dataset.auto}}}
 function pickServ(el){[...el.parentNode.children].forEach(c=>c.classList.remove('on'));el.classList.add('on');$('#vM').value=el.dataset.p}
 function saveVenta(id,citaId){
+  if(id&&window._borrar){
+    db.ventas=db.ventas.filter(x=>x.id!==id);
+    db.inventario.forEach(i=>{if(+i.porCorte)i.stock=+i.stock+ +i.porCorte}); // devuelve la navaja descontada
+    save();closeSheet();render();toast('🗑️ Venta eliminada');return}
   let cid=val('vC');
   if(!cid&&val('vN')){const c={id:uid(),nombre:val('vN'),tel:val('vT'),cumple:'',notas:'',alta:today()};db.clientes.push(c);cid=c.id}
   const s=$('#vS .on'),p=$('#vPg .on');
@@ -469,11 +480,12 @@ function formGasto(tipo,id){
   <label>Categoría</label><div class="chips" id="gC">${CATS[tipo].map(c=>`<div class="chip ${c===g.cat?'on':''}" onclick="[...this.parentNode.children].forEach(x=>x.classList.remove('on'));this.classList.add('on')">${c}</div>`).join('')}</div>
   <label>Detalle</label><input id="gD" value="${esc(g.desc||'')}" placeholder="Opcional">
   <label>Fecha</label><input id="gF" type="date" value="${g.fecha}">
-  <button class="btn block mt" onclick="saveGasto('${tipo}','${id||''}')">Guardar</button>
-  ${id?`<button class="btn del block mt" onclick="delItem('gastos','${id}')">Eliminar</button>`:''}`);
+  <button class="btn block mt" id="btnGuardar" data-txt="Guardar" onclick="saveGasto('${tipo}','${id||''}')">Guardar</button>
+  ${id?btnBorrar():''}`);
   setTimeout(()=>$('#gM')&&$('#gM').focus(),250);
 }
 function saveGasto(tipo,id){
+  if(id&&window._borrar){db.gastos=db.gastos.filter(x=>x.id!==id);save();closeSheet();render();toast('🗑️ Gasto eliminado');return}
   const m=+val('gM');if(!m){toast('Ingresa un monto');return}
   const o={tipo,monto:m,cat:($('#gC .on')||{}).textContent||'Otros',desc:val('gD'),fecha:val('gF')||today()};
   if(id)Object.assign(db.gastos.find(x=>x.id===id),o);else{db.gastos.push({id:uid(),...o});mark('gasto')}
