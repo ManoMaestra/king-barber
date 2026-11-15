@@ -500,7 +500,7 @@ VIEWS.finanzas=()=>{
   }else{
     const kb=Math.round(new Blob([JSON.stringify(db)]).size/1024);
     body=`<div class="card"><h3>Servicios y precios</h3>${db.servicios.map((s,i)=>`<div class="row"><div class="main"><b>${esc(s.n)}</b></div><b>${money(s.p)}</b><button class="btn sm sec" onclick="formServ(${i})">Editar</button></div>`).join('')}<button class="btn sec block mt" onclick="formServ()">+ Servicio</button></div>
-    <div class="card"><h3>💾 Respaldo</h3><div class="mut">Tus datos viven en este teléfono (${kb} KB). Exporta un respaldo cada semana y guárdalo en Drive o mándatelo por WhatsApp.</div>
+    <div class="card"><h3>💾 Respaldo</h3><div class="mut">Tus datos viven en este teléfono (${kb} KB). Exporta un respaldo cada semana y guárdalo en Drive o mándatelo por WhatsApp. Incluye las fotos de los clientes${db.media.length?` (${db.media.length})`:''}.</div>
     <div class="grid2 mt"><button class="btn" onclick="exportar()">Exportar</button><button class="btn sec" onclick="$('#importIn').click()">Importar</button></div>
     <div class="mut mt">Último respaldo: ${db.cfg.ultBackup?fmtD(db.cfg.ultBackup):'nunca'}</div></div>
     <div class="card"><h3>Zona peligrosa</h3><button class="btn del block" onclick="borrarTodo()">Borrar todos los datos</button></div>`;
@@ -817,7 +817,7 @@ function saveMsgs(){db.cfg.msgVuelta=val('m1');db.cfg.msgCumple=val('m2');db.cfg
 
 /* ====================== FOTOS Y VIDEOS DEL CLIENTE ======================
    Los archivos se guardan en IndexedDB del teléfono (aguanta videos). En db.media solo va la ficha liviana:
-   {id, clienteId, ventaId, fecha, tipo:'foto'|'video'}. No entran en el respaldo JSON. */
+   {id, clienteId, ventaId, fecha, tipo:'foto'|'video'}. El respaldo JSON las incluye en base64 (videos opcionales). */
 const IDB=new Promise((ok,ko)=>{const r=indexedDB.open('kingbarber-media',1);
   r.onupgradeneeded=()=>r.result.createObjectStore('media');r.onsuccess=()=>ok(r.result);r.onerror=()=>ko(r.error)});
 async function idbDo(mode,fn){const d=await IDB;return new Promise((ok,ko)=>{const tx=d.transaction('media',mode);const st=tx.objectStore('media');const q=fn(st);
@@ -1106,14 +1106,34 @@ $('#photoIn').addEventListener('change',e=>{
     mark('foto');save();render();toast('📸 Foto guardada')};img.src=r.result};r.readAsDataURL(f);e.target.value=''});
 
 /* --- Respaldo --- */
-function exportar(){db.cfg.ultBackup=today();save();
-  const b=new Blob([JSON.stringify(db)],{type:'application/json'});const name=`kingbarber-respaldo-${today()}.json`;
+/* Respaldo: datos + fotos (siempre) + videos (si se eligen), como base64 dentro del mismo JSON. */
+function exportar(){const nv=db.media.filter(m=>m.tipo==='video').length;
+  if(!nv)return exportarCon(false);
+  openSheet(`<h2 class="goldtxt">💾 Exportar respaldo</h2><div class="mut">Las fotos siempre van incluidas. Hay ${nv} video(s): incluirlos hace el archivo mucho más pesado.</div>
+  <button class="btn block mt" onclick="closeSheet();exportarCon(false)">Datos + fotos</button>
+  <button class="btn sec block mt" onclick="closeSheet();exportarCon(true)">Datos + fotos + videos</button>`)}
+const blobA64=b=>new Promise(ok=>{const r=new FileReader();r.onload=()=>ok(r.result);r.readAsDataURL(b)});
+async function exportarCon(videos){toast('Preparando respaldo…');db.cfg.ultBackup=today();save();
+  const archivos={};let falt=0;
+  for(const m of db.media){if(m.tipo==='video'&&!videos)continue;
+    try{const b=await idbDo('readonly',st=>st.get(m.id));if(b)archivos[m.id]=await blobA64(b);else falt++}catch(e){falt++}}
+  const b=new Blob([JSON.stringify({...db,_archivos:archivos})],{type:'application/json'});const name=`kingbarber-respaldo-${today()}.json`;
   const file=new File([b],name,{type:'application/json'});
   if(navigator.canShare&&navigator.canShare({files:[file]})){navigator.share({files:[file],title:name}).catch(()=>{})}
-  else{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click()}render()}
+  else{const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click()}render();
+  toast(`💾 Respaldo listo: ${Object.keys(archivos).length} foto(s)/video(s) · ${(b.size/1048576).toFixed(1)} MB`)}
 $('#importIn').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();
   r.onload=()=>{try{const d=JSON.parse(r.result);if(!d.clientes||!d.ventas)throw 0;if(!confirm('Esto reemplaza los datos actuales por el respaldo. ¿Seguir?'))return;
-    db=d;for(const k in DEF){if(db[k]===undefined)db[k]=JSON.parse(JSON.stringify(DEF[k]))}for(const k in DEF.cfg){if(db.cfg[k]===undefined)db.cfg[k]=DEF.cfg[k]}migrar();save();render();toast('✅ Respaldo cargado')}catch(x){toast('Archivo no válido')}};r.readAsText(f);e.target.value=''});
+    const arch=d._archivos||{};delete d._archivos;
+    db=d;for(const k in DEF){if(db[k]===undefined)db[k]=JSON.parse(JSON.stringify(DEF[k]))}for(const k in DEF.cfg){if(db.cfg[k]===undefined)db.cfg[k]=DEF.cfg[k]}migrar();
+    restaurarArchivos(arch).then(n=>{const sin=db.media.filter(m=>!arch[m.id]).length;
+      db.media=db.media.filter(m=>arch[m.id]||_tiene[m.id]);save();render();
+      toast(`✅ Respaldo cargado${n?` · ${n} foto(s)/video(s)`:''}${sin?` · ${sin} sin archivo`:''}`)})}catch(x){toast('Archivo no válido')}};r.readAsText(f);e.target.value=''});
+const _tiene={};
+async function restaurarArchivos(arch){let n=0;
+  for(const m of db.media){try{if(arch[m.id]){const b=await (await fetch(arch[m.id])).blob();await idbDo('readwrite',st=>st.put(b,m.id));delete _urls[m.id];n++}
+    else if(await idbDo('readonly',st=>st.get(m.id)))_tiene[m.id]=1}catch(e){}}
+  return n}
 function borrarTodo(){if(!confirm('¿Borrar TODOS los datos? No se puede deshacer.'))return;if(!confirm('¿Seguro? Exporta un respaldo antes.'))return;
   localStorage.removeItem(KEY);location.reload()}
 
