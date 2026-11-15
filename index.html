@@ -654,7 +654,7 @@ function saveCliente(id){
   if(id)Object.assign(cli(id),o);else db.clientes.push({id:uid(),alta:today(),...o});
   save();closeSheet();render();toast('✅ Cliente guardado');
 }
-function verCliente(id){
+function verCliente(id){window._volver=null;
   const c=cli(id);const V=db.ventas.filter(v=>v.clienteId===id).sort((a,b)=>b.fecha.localeCompare(a.fecha));
   const tot=V.reduce((s,v)=>s+ventaTotal(v),0);const lv=V[0]?.fecha;
   const prox=db.citas.filter(x=>x.clienteId===id&&x.fecha>=today()).sort((a,b)=>a.fecha.localeCompare(b.fecha))[0];
@@ -672,7 +672,7 @@ function verCliente(id){
       <button class="btn ${hoy?'sec ':''}block mt" onclick="iniciarTarjeta('${id}')">⭐ Iniciar desde el próximo corte</button>`})()}</div>
   ${(()=>{const M=mediaDe(id);return `<div class="card"><div class="between"><h3 style="margin:0">📸 Fotos de sus cortes</h3><button class="btn sm sec" onclick="subirMediaCliente('${id}')">+ Subir</button></div>
     ${M.length?`<div class="mt" onclick="verMedia('${M[0].id}')" style="cursor:pointer">${tagMedia(M[0],'ultimo')}<div class="mut mt">Último: ${fmtD(M[0].fecha)} · ¿Lo quiere igual?</div></div>
-      ${M.length>1?`<div class="gal mt">${M.slice(1).map(m=>`<div class="m" onclick="verMedia('${m.id}')">${tagMedia(m)}<span>${m.tipo==='video'?'▶ ':''}${fmtD(m.fecha).slice(4)}</span></div>`).join('')}</div>`:''}`
+      <button class="btn block mt" onclick="verFotos('${id}')">🖼️ Ver historial de cortes en fotos (${M.length})</button>`
     :'<div class="mut mt">Sin fotos todavía. Súbelas al registrar el corte o con “+ Subir”.</div>'}</div>`})()}
   ${c.notas?`<div class="card"><h3>Notas</h3>${esc(c.notas).replace(/\n/g,'<br>')}</div>`:''}
   ${prox?`<div class="card"><h3>Próxima cita</h3>${fmtD(prox.fecha)} · ${prox.hora}</div>`:''}
@@ -838,10 +838,23 @@ async function guardarMedia(files,clienteId,ventaId,fecha){let n=0;
 const mediaDe=cid=>db.media.filter(m=>m.clienteId===cid).sort((a,b)=>b.fecha.localeCompare(a.fecha)||(b.id>a.id?1:-1));
 async function pintarMedia(root){for(const el of (root||document).querySelectorAll('[data-mid]')){const u=await mediaURL(el.dataset.mid);if(u)el.src=u}}
 const tagMedia=(m,cls)=>m.tipo==='video'?`<video data-mid="${m.id}" class="${cls||''}" muted playsinline preload="metadata"></video>`:`<img data-mid="${m.id}" class="${cls||''}" alt="">`;
+/* Historial de cortes en fotos: una tarjeta por día de corte, del más reciente al más antiguo, con servicio y notas. */
+function verFotos(cid){const c=cli(cid);const M=mediaDe(cid);window._volver=()=>verFotos(cid);
+  const dias={};M.forEach(m=>(dias[m.fecha]=dias[m.fecha]||[]).push(m));
+  const F=Object.keys(dias).sort().reverse();
+  openSheet(`<h2 class="goldtxt">Cortes de ${esc(c.nombre.split(' ')[0])}</h2>
+  <div class="between" style="margin-bottom:6px"><span class="mut">${F.length} corte(s) con foto · ${M.length} archivo(s)</span><button class="btn sm sec" onclick="subirMediaCliente('${cid}')">+ Subir</button></div>
+  ${F.length?F.map((f,i)=>{const sv=db.ventas.filter(v=>v.clienteId===cid&&v.fecha===f&&v.tipo!=='producto').map(v=>v.servicio);
+    return `<div class="card"><div class="between"><h3 style="margin:0">${fmtD(f)}${i===0?' · último':''}</h3><span class="mut">hace ${diffDays(f,today())} días</span></div>
+    ${sv.length?`<div class="mut mt">✂️ ${esc([...new Set(sv)].join(', '))}</div>`:''}
+    <div class="gal mt" style="${dias[f].length===1?'grid-template-columns:1fr':''}">${dias[f].map(m=>`<div class="m" style="${dias[f].length===1?'aspect-ratio:4/3':''}" onclick="verMedia('${m.id}')">${tagMedia(m)}${m.tipo==='video'?'<span>▶ video</span>':''}</div>`).join('')}</div></div>`}).join('')
+  :'<div class="empty">Sin fotos todavía.</div>'}
+  <button class="btn sec block mt" onclick="verCliente('${cid}')">← Volver a la ficha</button>`);
+  pintarMedia($('#sheet'))}
 async function verMedia(id){const m=db.media.find(x=>x.id===id);if(!m)return;const u=await mediaURL(id);
   openSheet(`<h2 class="goldtxt">${esc((cli(m.clienteId)||{}).nombre||'')}</h2><div class="mut" style="margin-bottom:8px">${fmtD(m.fecha)}${m.ventaId?' · '+esc((db.ventas.find(v=>v.id===m.ventaId)||{}).servicio||''):''}</div>
   ${m.tipo==='video'?`<video src="${u}" controls playsinline autoplay class="ultimo" style="max-height:70vh"></video>`:`<img src="${u}" class="ultimo" style="max-height:70vh;object-fit:contain">`}
-  <div class="grid2 mt"><button class="btn sec" onclick="verCliente('${m.clienteId}')">← Volver</button><button class="btn del" style="margin:0" onclick="borrarMedia('${id}')">🗑️ Eliminar</button></div>`)}
+  <div class="grid2 mt"><button class="btn sec" onclick="(window._volver||(()=>verCliente('${m.clienteId}')))()">← Volver</button><button class="btn del" style="margin:0" onclick="borrarMedia('${id}')">🗑️ Eliminar</button></div>`)}
 async function borrarMedia(id){if(!confirm('¿Eliminar esta foto/video?'))return;const m=db.media.find(x=>x.id===id);
   try{await idbDo('readwrite',st=>st.delete(id))}catch(e){}
   db.media=db.media.filter(x=>x.id!==id);save();if(m)verCliente(m.clienteId);else closeSheet();toast('Eliminado')}
