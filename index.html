@@ -209,6 +209,13 @@ function wa(tel,msg){
   const p=phone(tel);if(!p){toast('Cliente sin teléfono');return false}
   window.open(`https://wa.me/${p}?text=${encodeURIComponent(msg)}`,'_blank');return true}
 function fill(t,o){return t.replace(/\{(\w+)\}/g,(m,k)=>o[k]??m)}
+/* Frecuencia de corte: mediana de los días entre sus últimos cortes (hasta 6 intervalos). Necesita 2 cortes en días distintos. */
+function frecuencia(id){const F=[...new Set(db.ventas.filter(v=>v.clienteId===id&&v.tipo!=='producto').map(v=>v.fecha))].sort().slice(-7);
+  if(F.length<2)return null;const g=[];for(let i=1;i<F.length;i++)g.push(diffDays(F[i-1],F[i]));g.sort((a,b)=>a-b);
+  const m=g.length%2?g[(g.length-1)/2]:(g[g.length/2-1]+g[g.length/2])/2;return Math.max(1,Math.round(m))}
+/* Atrasado: pasó su frecuencia + 20% (mín. 3 días de margen). Sin frecuencia, usa los días de inactividad configurados. */
+const limiteDias=id=>{const f=frecuencia(id);return f?Math.max(f+3,Math.round(f*1.2)):db.cfg.diasInactivo};
+const atrasado=(id,lv)=>!!lv&&diffDays(lv,today())>limiteDias(id);
 function lastVisit(id){let m=null;for(const v of db.ventas)if(v.clienteId===id&&(!m||v.fecha>m))m=v.fecha;return m}
 /* Tarjeta de fidelidad: cuenta solo desde que Diego la inicia para ese cliente (c.tarjetaTs).
    Sellos = cortes pagados desde el inicio − cortes gratis ya canjeados × meta. Con sellos ≥ meta, el próximo es gratis. */
@@ -375,9 +382,9 @@ VIEWS.clientes=()=>{
   <input class="search" placeholder="🔍 Buscar nombre o teléfono" value="${esc(sub.q||'')}" oninput="sub.q=this.value;clearTimeout(window._qs);window._qs=setTimeout(()=>{render();const i=$('.search');i.focus();i.setSelectionRange(i.value.length,i.value.length)},250)">
   <div class="card">${list.length?list.map(({c,lv})=>{const n=visits(c.id);
     return `<div class="row" onclick="verCliente('${c.id}')"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b>
-    <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'}${tieneTarjeta(c.id)?` · ⭐ ${n}/${meta()}`:''}</span></div>
+    <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'}${frecuencia(c.id)?` · cada ~${frecuencia(c.id)}d`:''}${tieneTarjeta(c.id)?` · ⭐ ${n}/${meta()}`:''}</span></div>
     ${deuda(c.id)?`<span class="pill red">Fió ${money(deuda(c.id))}</span>`:''}
-    ${lv&&diffDays(lv,today())>db.cfg.diasInactivo?'<span class="pill red">Inactivo</span>':''}</div>`}).join(''):'<div class="empty">Aún no hay clientes</div>'}</div>`;
+    ${atrasado(c.id,lv)?'<span class="pill red">Atrasado</span>':''}</div>`}).join(''):'<div class="empty">Aún no hay clientes</div>'}</div>`;
 };
 
 function pendientesWA(){
@@ -385,7 +392,7 @@ function pendientesWA(){
   const rec=db.citas.filter(c=>c.fecha===man&&!c.recordado);
   const cum=db.clientes.filter(c=>c.cumple&&c.cumple.slice(5)===md&&c.cumpleEnviado!==t.slice(0,4));
   const ina=db.clientes.map(c=>({c,lv:lastVisit(c.id)})).filter(({c,lv})=>{
-    if(!lv)return false;const d=diffDays(lv,t);if(d<=db.cfg.diasInactivo)return false;
+    if(!atrasado(c.id,lv))return false;
     if(c.ultContacto&&c.ultContacto>lv&&diffDays(c.ultContacto,t)<7)return false;return true})
     .sort((a,b)=>a.lv.localeCompare(b.lv));
   const prox=db.clientes.filter(c=>{if(!c.cumple)return false;let dd=diffDays(t,t.slice(0,4)+'-'+c.cumple.slice(5));if(dd<0)dd=diffDays(t,(+t.slice(0,4)+1)+'-'+c.cumple.slice(5));return dd>0&&dd<=7});
@@ -400,7 +407,7 @@ VIEWS.whatsapp=()=>{
     <div class="card"><h3>⏰ Recordar citas de mañana</h3>${p.rec.length?p.rec.map(c=>{const k=cli(c.clienteId)||{};return `<div class="row"><div class="av">${c.hora}</div><div class="main"><b>${esc(k.nombre||'Cliente')}</b><span>${esc(c.servicio||'')}</span></div><button class="btn sm wa" onclick="waRec('${c.id}')">Enviar</button></div>`}).join(''):'<div class="empty">Nada pendiente</div>'}</div>
     <div class="card"><h3>🎂 Cumpleaños hoy</h3>${p.cum.length?p.cum.map(c=>`<div class="row"><div class="av">🎂</div><div class="main"><b>${esc(c.nombre)}</b><span>Cumple hoy</span></div><button class="btn sm wa" onclick="waCumple('${c.id}')">Saludar</button></div>`).join(''):'<div class="empty">Nadie cumple hoy</div>'}
     ${p.prox.length?`<div class="mut mt">Próximos 7 días: ${p.prox.map(c=>`${esc(c.nombre)} (${c.cumple.slice(8)} ${MES[+c.cumple.slice(5,7)-1]})`).join(', ')}</div>`:''}</div>
-    <div class="card"><h3>💈 No vienen hace +${db.cfg.diasInactivo} días</h3>${p.ina.length?p.ina.map(({c,lv})=>`<div class="row"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b><span>Hace ${diffDays(lv,today())} días${c.ultContacto?` · Escrito ${fmtD(c.ultContacto)}`:''}</span></div><button class="btn sm wa" onclick="waVuelta('${c.id}')">Escribir</button></div>`).join(''):'<div class="empty">Todos al día 👑</div>'}</div>`;
+    <div class="card"><h3>💈 Pasaron su frecuencia de corte</h3>${p.ina.length?p.ina.map(({c,lv})=>`<div class="row"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b><span>Hace ${diffDays(lv,today())} días · ${frecuencia(c.id)?`suele venir cada ${frecuencia(c.id)}`:'sin frecuencia aún'}${c.ultContacto?` · Escrito ${fmtD(c.ultContacto)}`:''}</span></div><button class="btn sm wa" onclick="waVuelta('${c.id}')">Escribir</button></div>`).join(''):'<div class="empty">Todos al día 👑</div>'}</div>`;
   }else if(tab==='fidel'){
     const list=db.clientes.filter(c=>c.tarjetaTs).map(c=>({c,n:visits(c.id)})).sort((a,b)=>b.n-a.n);
     body=`<div class="card"><div class="mut">La tarjeta cuenta solo desde que tú la inicias: al registrar un corte o en la ficha del cliente toca “⭐ Iniciar tarjeta”.</div>
@@ -408,13 +415,13 @@ VIEWS.whatsapp=()=>{
     <button class="btn sec block mt" onclick="editarPremios()">✏️ Cambiar premios</button></div>
     <div class="card">${list.length?list.map(({c,n})=>{const pr=premioEn(n>=meta()?1:n+1);return `<div class="row"><div class="main"><b>${esc(c.nombre)} ${pr?`<span class="pill gold">🎁 Próximo: ${esc(pr.p)}</span>`:''}</b><span class="stamps">${sellos(n)}</span></div><button class="btn sm wa" onclick="waSello('${c.id}')">Enviar</button></div>`}).join(''):'<div class="empty">Ningún cliente con tarjeta. Iníciala desde la ficha del cliente.</div>'}</div>`;
   }else{
-    body=`<div class="card"><h3>Plantillas</h3><div class="mut">Usa {nombre}, {dias}, {fecha}, {hora}, {sellos}, {n}, {meta}, {falta}</div>
+    body=`<div class="card"><h3>Plantillas</h3><div class="mut">Usa {nombre}, {frecuencia}, {dias}, {fecha}, {hora}, {sellos}, {n}, {meta}, {falta}</div>
     <label>Volver a cortarse</label><textarea id="m1">${esc(db.cfg.msgVuelta)}</textarea>
     <label>Cumpleaños</label><textarea id="m2">${esc(db.cfg.msgCumple)}</textarea>
     <label>Recordatorio de cita</label><textarea id="m3">${esc(db.cfg.msgRecordatorio)}</textarea>
     <label>Recordatorio de fiado</label><textarea id="m7">${esc(db.cfg.msgFiado)}</textarea>
     <label>Tarjeta de sellos</label><textarea id="m4">${esc(db.cfg.msgSello)}</textarea>
-    <label>Días para considerar inactivo</label><input id="m5" type="number" inputmode="numeric" value="${db.cfg.diasInactivo}">
+    <label>Días sin venir para avisar (clientes con menos de 2 cortes)</label><input id="m5" type="number" inputmode="numeric" value="${db.cfg.diasInactivo}">
     <button class="btn block mt" onclick="saveMsgs()">Guardar</button></div>`;
   }
   return `<h2 class="goldtxt" style="margin:0 0 10px">WhatsApp</h2><div class="tabs">${tabs.map(([k,l])=>`<div class="tab ${tab===k?'on':''}" onclick="go('whatsapp','${k}')">${l}${k==='pend'&&p.total?` · ${p.total}`:''}</div>`).join('')}</div>${body}`;
@@ -653,6 +660,9 @@ function verCliente(id){
   const prox=db.citas.filter(x=>x.clienteId===id&&x.fecha>=today()).sort((a,b)=>a.fecha.localeCompare(b.fecha))[0];
   openSheet(`<div class="flex"><div class="av" style="width:54px;height:54px;font-size:20px">${ini(c.nombre)}</div><div><h2 class="goldtxt" style="margin:0">${esc(c.nombre)}</h2><div class="mut">${esc(c.tel||'Sin teléfono')}${c.cumple?` · 🎂 ${c.cumple.slice(8)} ${MES[+c.cumple.slice(5,7)-1]}`:''}</div></div></div>
   <div class="grid3 mt"><div class="kpi"><div class="l">Visitas</div><div class="v">${V.length}</div></div><div class="kpi"><div class="l">Total</div><div class="v" style="font-size:16px">${money(tot)}</div></div><div class="kpi"><div class="l">Última</div><div class="v" style="font-size:16px">${lv?diffDays(lv,today())+'d':'—'}</div></div></div>
+  <div class="kpi mt ${atrasado(id,lv)?'':''}" style="${atrasado(id,lv)?'border-color:#5a2a27':''}"><div class="between"><div><div class="l">Frecuencia de corte</div><div class="v" style="font-size:16px">${frecuencia(id)?`Cada ~${frecuencia(id)} días`:'Falta otro corte para calcularla'}</div></div>
+    ${atrasado(id,lv)?`<button class="btn sm wa" onclick="waVuelta('${id}')">💬 Avisar</button>`:''}</div>
+    ${frecuencia(id)&&lv?`<div class="mut mt">${atrasado(id,lv)?`⚠️ Atrasado: lleva ${diffDays(lv,today())} días`:`Próximo corte aprox. ${fmtD(addDays(lv,frecuencia(id)))}`}</div>`:''}</div>
   ${deuda(id)?`<div class="card mt" style="border-color:#5a2a27"><div class="between"><h3 style="margin:0;color:#ffb4ae">💸 Fió</h3><b class="neg">${money(deuda(id))}</b></div>
     <div class="grid2 mt"><button class="btn sm wa" onclick="waFiado('${id}')">💬 Recordar</button><button class="btn sm" onclick="pagarFiado('${id}')">Pagó</button></div></div>`:''}
   <div class="card mt" ${c.tarjetaTs?`onclick="waSello('${id}')" style="cursor:pointer"`:''}><div class="between"><h3 style="margin:0">Tarjeta ⭐</h3>${c.tarjetaTs?'<span class="pill gold">Toca para enviar 💬</span>':''}</div>${c.tarjetaTs?`<div class="stamps mt">${sellos(visits(id))}</div><div class="mut mt">Desde ${fmtD(dkey(new Date(c.tarjetaTs)))} · ${visits(id)} de ${meta()}</div>
@@ -782,7 +792,8 @@ function delItem(col,id){if(!confirm('¿Eliminar? No se puede deshacer.'))return
   save();closeSheet();render();toast('Eliminado')}
 
 /* --- WhatsApp acciones --- */
-function waVuelta(id){const c=cli(id);const lv=lastVisit(id);if(wa(c.tel,fill(db.cfg.msgVuelta,{nombre:c.nombre.split(' ')[0],dias:diffDays(lv,today())}))){c.ultContacto=today();save();setTimeout(render,400)}}
+function waVuelta(id){const c=cli(id);const lv=lastVisit(id);const f=frecuencia(id);
+  if(wa(c.tel,fill(db.cfg.msgVuelta,{nombre:c.nombre.split(' ')[0],dias:diffDays(lv,today()),frecuencia:f?`cada ${f} días`:''}))){c.ultContacto=today();save();setTimeout(render,400)}}
 function waCumple(id){const c=cli(id);if(wa(c.tel,fill(db.cfg.msgCumple,{nombre:c.nombre.split(' ')[0]}))){c.cumpleEnviado=today().slice(0,4);save();setTimeout(render,400)}}
 function waRec(id){const a=db.citas.find(x=>x.id===id);const c=cli(a.clienteId)||{};if(wa(c.tel,fill(db.cfg.msgRecordatorio,{nombre:(c.nombre||'').split(' ')[0],fecha:fmtD(a.fecha),hora:a.hora}))){a.recordado=true;save();setTimeout(render,400)}}
 function waSello(id){const c=cli(id);const n=visits(id);const m=meta();
