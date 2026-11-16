@@ -686,7 +686,7 @@ function verCliente(id){window._volver=null;
 function formCita(id,fecha,clienteId){
   const c=id?db.citas.find(x=>x.id===id):{fecha:fecha||today(),hora:'',clienteId:clienteId||''};
   const ocup=f=>db.citas.filter(x=>x.fecha===f&&x.id!==id).map(x=>x.hora);
-  const horas=[];for(let h=10;h<=20;h++)for(const m of [0,15,30,45]){if(h===20&&m>0)break;horas.push(pad(h)+':'+pad(m))}
+  const horas=[];for(let h=9;h<=20;h++)for(const m of [0,15,30,45]){if(h===20&&m>0)break;horas.push(pad(h)+':'+pad(m))}
   openSheet(`<h2 class="goldtxt">${id?'Editar cita':'Agendar cita'}</h2>
   <label>Cliente</label><select id="aC">${cliOptions(c.clienteId)}</select>
   <div id="aNew" style="${c.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="aN" value="${esc(c.nombre||'')}"></div><div><label>WhatsApp</label><input id="aT" inputmode="tel"></div></div><label>Cumpleaños (opcional)</label>${cumpleInputs('aB','')}</div>
