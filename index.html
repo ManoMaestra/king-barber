@@ -270,8 +270,20 @@ function delta(cur,prev,txt,inv){
   if(!prev)return `<div style="font-size:11px;margin-top:3px;color:${inv?'var(--bad)':'var(--ok)'}">▲ nuevo ${txt}</div>`;
   const pc=Math.round((cur-prev)/Math.abs(prev)*100);const up=pc>0;const good=pc===0?null:(up!==!!inv);
   return `<div style="font-size:11px;margin-top:3px;color:${good===null?'var(--mut)':good?'var(--ok)':'var(--bad)'}">${pc===0?'=':up?'▲':'▼'} ${Math.abs(pc)}% ${txt}</div>`}
-function resumenMes(pre,hasta){
-  const en=x=>x.fecha.startsWith(pre)&&(!hasta||x.fecha<=hasta);
+function resumenMes(pre,hasta){return resumenEn(x=>x.fecha.startsWith(pre)&&(!hasta||x.fecha<=hasta))}
+const resumenRango=(d,h)=>resumenEn(x=>x.fecha>=d&&x.fecha<=h);
+/* Período elegido en Resumen: mes (flechas), 2m/3m/6m (meses completos hasta hoy), año, o personalizado.
+   Se compara contra el período anterior del mismo largo en días. */
+function periodo(){const t=today(),k=sub.per||'mes';let d,h=t,nom;
+  const iniMes=n=>{const x=new Date(+t.slice(0,4),+t.slice(5,7)-1-n,1);return `${x.getFullYear()}-${pad(x.getMonth()+1)}-01`};
+  if(k==='mes')return null;
+  if(k==='2m'){d=iniMes(1);nom='Últimos 2 meses'}else if(k==='3m'){d=iniMes(2);nom='Últimos 3 meses'}
+  else if(k==='6m'){d=iniMes(5);nom='Últimos 6 meses'}else if(k==='anio'){d=t.slice(0,4)+'-01-01';nom='Este año'}
+  else{d=sub.pd||iniMes(1);h=sub.ph||t;if(d>h)[d,h]=[h,d];nom='Personalizado'}
+  const largo=diffDays(d,h)+1,ph=addDays(d,-1),pd=addDays(d,-largo);
+  return {d,h,nom,R:resumenRango(d,h),P:resumenRango(pd,ph),txt:`vs ${fmtD(pd)} – ${fmtD(ph)}`}}
+function setPer(k){sub.per=k;render()}
+function resumenEn(en){
   const V=db.ventas.filter(en),G=db.gastos.filter(en);
   const VB=V.filter(v=>v.tipo!=='producto'),VT=V.filter(v=>v.tipo==='producto');
   const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
@@ -375,17 +387,22 @@ VIEWS.agenda=()=>{
 };
 
 VIEWS.clientes=()=>{
-  const q=(sub.q||'').toLowerCase();
-  const list=db.clientes.filter(c=>!q||c.nombre.toLowerCase().includes(q)||String(c.tel).includes(q))
+  const q=normTxt(sub.q||'');
+  const list=db.clientes.filter(c=>!q||normTxt(c.nombre+' '+c.tel).includes(q))
     .map(c=>({c,lv:lastVisit(c.id)})).sort((a,b)=>a.c.nombre.localeCompare(b.c.nombre));
   return `<div class="between" style="margin-bottom:10px"><h2 class="goldtxt" style="margin:0">Clientes</h2><button class="btn sm" onclick="formCliente()">+ Cliente</button></div>
-  <input class="search" placeholder="🔍 Buscar nombre o teléfono" value="${esc(sub.q||'')}" oninput="sub.q=this.value;clearTimeout(window._qs);window._qs=setTimeout(()=>{render();const i=$('.search');i.focus();i.setSelectionRange(i.value.length,i.value.length)},250)">
+  <input class="search" type="search" autocomplete="off" placeholder="🔍 Buscar nombre o teléfono" value="${esc(sub.q||'')}" oninput="filtrarClientes(this.value)">
   <div class="card">${list.length?list.map(({c,lv})=>{const n=visits(c.id);
-    return `<div class="row" onclick="verCliente('${c.id}')"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b>
+    return `<div class="row cliRow" data-k="${esc(normTxt(c.nombre+' '+c.tel))}" onclick="verCliente('${c.id}')"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b>
     <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'}${frecuencia(c.id)?` · cada ~${frecuencia(c.id)}d`:''}${tieneTarjeta(c.id)?` · ⭐ ${n}/${meta()}`:''}</span></div>
     ${deuda(c.id)?`<span class="pill red">Fió ${money(deuda(c.id))}</span>`:''}
-    ${atrasado(c.id,lv)?'<span class="pill red">Atrasado</span>':''}</div>`}).join(''):'<div class="empty">Aún no hay clientes</div>'}</div>`;
+    ${atrasado(c.id,lv)?'<span class="pill red">Atrasado</span>':''}</div>`}).join(''):(db.clientes.length?'':'<div class="empty">Aún no hay clientes</div>')}<div id="cliVacio" class="empty" style="display:${list.length||!db.clientes.length?'none':'block'}">Ningún cliente coincide</div></div>`;
 };
+/* Búsqueda sin mayúsculas ni tildes; filtra la lista mientras se escribe, sin redibujar la pantalla. */
+const normTxt=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+function filtrarClientes(v){sub.q=v;const q=normTxt(v.trim());let n=0;
+  document.querySelectorAll('.cliRow').forEach(r=>{const ok=!q||r.dataset.k.includes(q)||r.dataset.k.replace(/\D/g,'').includes(q.replace(/\D/g,'')||'\u0000');r.style.display=ok?'':'none';if(ok)n++});
+  const e=$('#cliVacio');if(e)e.style.display=n||!db.clientes.length?'none':'block'}
 
 function pendientesWA(){
   const t=today(),man=addDays(t,1),md=t.slice(5);
@@ -444,7 +461,12 @@ VIEWS.finanzas=()=>{
   const byCat=arr=>{const o={};arr.forEach(g=>o[g.cat]=(o[g.cat]||0)+ +g.monto);const tot=arr.reduce((s,g)=>s+ +g.monto,0)||1;
     return Object.entries(o).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="mt"><div class="between"><span>${esc(k)}</span><b>${money(v)}</b></div><div class="bar mt"><i style="width:${v/tot*100}%"></i></div></div>`).join('')};
   if(tab==='resumen'){
-    const R=resumenMes(ym);const MP=mesPrevio(ym),P=MP.R;
+    const PR=periodo();const R=PR?PR.R:resumenMes(ym);const MP=PR?{txt:PR.txt}:mesPrevio(ym),P=PR?PR.P:MP.R;
+    const perBtns=[['mes','Mes'],['2m','2 meses'],['3m','3 meses'],['6m','6 meses'],['anio','Este año'],['custom','📅 Fechas']]
+      .map(([k,l])=>`<button class="chip ${(sub.per||'mes')===k?'on':''}" style="flex:none${(sub.per||'mes')===k?';border-color:var(--gold);color:var(--gold)':''}" onclick="setPer('${k}')">${l}</button>`).join('');
+    const perSel=`<div class="flex" style="overflow-x:auto;gap:6px;margin-bottom:10px;padding-bottom:2px">${perBtns}</div>
+      ${!PR?mesSel:`<div class="card" style="margin-bottom:10px;text-align:center"><b class="serif">${PR.nom.toUpperCase()}</b><div class="mut">${fmtD(PR.d)} – ${fmtD(PR.h)}</div>
+      ${sub.per==='custom'?`<div class="grid2 mt"><div><label style="margin-top:0">Desde</label><input type="date" value="${PR.d}" onchange="sub.pd=this.value;render()"></div><div><label style="margin-top:0">Hasta</label><input type="date" value="${PR.h}" onchange="sub.ph=this.value;render()"></div></div>`:''}</div>`}`;
     const pago={};R.V.forEach(v=>pago[v.pago]=(pago[v.pago]||0)+ventaTotal(v));
     const serv={};R.VB.forEach(v=>serv[v.servicio]=(serv[v.servicio]||0)+1);
     const pv={};R.VT.forEach(v=>{const pp=prod(v.productoId);const k=pp?pn(pp):(String(v.servicio||'Producto').replace(/ ×\d+$/,''));pv[k]=pv[k]||{u:0,g:0};pv[k].u+=(+v.cant||1);pv[k].g+=ventaTotal(v)-(+v.costo||0)});
@@ -452,10 +474,10 @@ VIEWS.finanzas=()=>{
     const stC=db.productos.reduce((s,x)=>s+x.stock*(+x.costo||0),0),stP=db.productos.reduce((s,x)=>s+x.stock*(+x.precio||0),0);
     const top=Object.entries(db.clientes.reduce((o,c)=>{o[c.nombre]=R.V.filter(v=>v.clienteId===c.id).reduce((s,v)=>s+ventaTotal(v),0);return o},{})).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]).slice(0,5);
     const ln=(l,v,c,d)=>`<div class="between mt"><span class="mut" style="font-size:13px">${l}</span><span style="text-align:right"><b class="${c||''}">${v}</b>${d||''}</span></div>`;
-    body=`${mesSel}
+    body=`${perSel}
     <button class="btn sec block" style="margin-bottom:12px" onclick="menuExport()">📊 Exportar a Excel</button>
     <div class="grid2" style="margin-bottom:12px">
-    <div class="kpi big"><div class="l">Utilidad total del mes</div><div class="v ${R.util>=0?'goldtxt':'neg'}">${money(R.util)}</div><div class="mut">Barbería ${money(R.b.util)} · Tienda ${money(R.t.util)}</div>${delta(R.util,P.util,MP.txt)}</div>
+    <div class="kpi big"><div class="l">Utilidad total ${PR?'del período':'del mes'}</div><div class="v ${R.util>=0?'goldtxt':'neg'}">${money(R.util)}</div><div class="mut">Barbería ${money(R.b.util)} · Tienda ${money(R.t.util)}</div>${delta(R.util,P.util,MP.txt)}</div>
     <div class="kpi"><div class="l">✂️ Cortes</div><div class="v">${R.b.n}</div>${delta(R.b.n,P.b.n,MP.txt)}</div>
     <div class="kpi"><div class="l">Ventas totales</div><div class="v pos">${money(R.ing)}</div>${delta(R.ing,P.ing,MP.txt)}</div>
     <div class="kpi"><div class="l">Ticket promedio</div><div class="v">${money(R.b.n?R.b.ing/R.b.n:0)}</div>${delta(R.b.n?R.b.ing/R.b.n:0,P.b.n?P.b.ing/P.b.n:0,MP.txt)}</div>
@@ -464,7 +486,7 @@ VIEWS.finanzas=()=>{
       <div class="between mt" style="border-top:1px solid var(--line);padding-top:8px"><b>Utilidad</b><b class="${R.b.util>=0?'goldtxt':'neg'}">${money(R.b.util)}</b></div></div>
     <div class="card"><h3>👕 Tienda</h3>${ln('Ventas ('+R.t.n+' unidades)',money(R.t.ing),'pos',delta(R.t.ing,P.t.ing,MP.txt))}${ln('Costo de lo vendido',money(R.t.cogs),'neg')}${R.t.otros?ln('Otros gastos tienda',money(R.t.otros),'neg'):''}
       <div class="between mt" style="border-top:1px solid var(--line);padding-top:8px"><b>Ganancia</b><b class="${R.t.util>=0?'goldtxt':'neg'}">${money(R.t.util)}</b></div>
-      ${ln('Invertido en mercadería este mes',money(R.t.compras))}${ln('Stock sin vender (a costo)',money(stC))}${ln('Stock sin vender (a precio venta)',money(stP))}</div>
+      ${ln(PR?'Invertido en mercadería en el período':'Invertido en mercadería este mes',money(R.t.compras))}${ln('Stock sin vender (a costo)',money(stC))}${ln('Stock sin vender (a precio venta)',money(stP))}</div>
     <div class="kpi big" style="border-color:var(--line);background:var(--card2);margin-bottom:12px"><div class="l">Te queda tras gastos personales</div><div class="v ${R.util-R.per>=0?'pos':'neg'}">${money(R.util-R.per)}</div>${delta(R.util-R.per,P.util-P.per,MP.txt)}<div class="mut">Personales: ${money(R.per)}</div></div>
     <div class="card"><h3>Por medio de pago</h3>${Object.keys(pago).length?Object.entries(pago).map(([k,v])=>`<div class="between mt"><span>${esc(k)}</span><b>${money(v)}</b></div>`).join(''):'<div class="empty">Sin ventas</div>'}</div>
     <div class="card"><h3>Servicios más vendidos</h3>${Object.keys(serv).length?Object.entries(serv).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`<div class="between mt"><span>${esc(k)}</span><b>${v}</b></div>`).join(''):'<div class="empty">—</div>'}</div>
