@@ -154,7 +154,8 @@ textarea{min-height:90px;resize:vertical}
 /* ====================== DATOS ====================== */
 const KEY='kingbarber_v1';
 const DEF={
-  clientes:[], ventas:[], gastos:[], citas:[], fotos:[], actividad:{}, productos:[], media:[],
+  clientes:[], ventas:[], gastos:[], citas:[], fotos:[], actividad:{}, productos:[], media:[], mensualidades:[],
+  planes:[{id:'pm1',n:'Corte',p:35000,cortes:4,dias:30},{id:'pm2',n:'Corte + Barba',p:45000,cortes:4,dias:30}],
   trivia:{cur:null,usadas:[],ok:0,mal:0,dia:null,res:null},
   servicios:[{n:'Corte',p:10000},{n:'Corte + Barba',p:14000},{n:'Barba',p:6000},{n:'Corte niño',p:8000},{n:'Diseño / Líneas',p:3000}],
   inventario:[
@@ -167,6 +168,7 @@ const DEF={
     msgCumple:'¡Feliz cumpleaños {nombre}! 🎉👑 De regalo en King Barber tienes 20% de descuento en tu corte este mes.',
     msgRecordatorio:'Hola {nombre}! 💈 Te recuerdo tu hora en King Barber mañana {fecha} a las {hora}. ¡Te espero! 👑',
     msgFiado:'Hola {nombre}! 👑 Te recuerdo que quedó pendiente {monto} en King Barber. Cuando puedas me transfieres 🙏💈',
+    msgMens:'Hola {nombre}! 👑 Tu mensualidad King Barber ({plan}) comienza el {inicio}. Son {cortes} cortes desde el {inicio} hasta el {fin}. ¡Te espero! 💈',
     msgSello:'¡Gracias {nombre}! 👑 Tu tarjeta King Barber:\n{sellos}\nLlevas {n} de {meta}. {falta}\nGuarda este número para agendar 💈'}
 };
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
@@ -210,7 +212,7 @@ function wa(tel,msg){
   window.open(`https://wa.me/${p}?text=${encodeURIComponent(msg)}`,'_blank');return true}
 function fill(t,o){return t.replace(/\{(\w+)\}/g,(m,k)=>o[k]??m)}
 /* Frecuencia de corte: mediana de los días entre sus últimos cortes (hasta 6 intervalos). Necesita 2 cortes en días distintos. */
-function frecuencia(id){const F=[...new Set(db.ventas.filter(v=>v.clienteId===id&&v.tipo!=='producto').map(v=>v.fecha))].sort().slice(-7);
+function frecuencia(id){const F=[...new Set(db.ventas.filter(v=>v.clienteId===id&&esCorte(v)).map(v=>v.fecha))].sort().slice(-7);
   if(F.length<2)return null;const g=[];for(let i=1;i<F.length;i++)g.push(diffDays(F[i-1],F[i]));g.sort((a,b)=>a-b);
   const m=g.length%2?g[(g.length-1)/2]:(g[g.length/2-1]+g[g.length/2])/2;return Math.max(1,Math.round(m))}
 /* Atrasado: pasó su frecuencia + 20% (mín. 3 días de margen). Sin frecuencia, usa los días de inactividad configurados. */
@@ -225,7 +227,7 @@ const premios=()=>[...(db.cfg.premios||[])].filter(x=>+x.n>0).sort((a,b)=>a.n-b.
 const meta=()=>Math.max(2,...premios().map(x=>+x.n));
 const premioEn=n=>premios().find(x=>+x.n===n);
 function visits(id){const c=cli(id);if(!c||!c.tarjetaTs)return 0;
-  const t=db.ventas.filter(v=>v.clienteId===id&&v.tipo!=='producto'&&(+v.ts||0)>=c.tarjetaTs).length;
+  const t=db.ventas.filter(v=>v.clienteId===id&&esCorte(v)&&(+v.ts||0)>=c.tarjetaTs).length;
   return t?((t-1)%meta())+1:0}
 const proximo=id=>{const n=visits(id);return n>=meta()?1:n+1};
 const tieneTarjeta=id=>!!(cli(id)||{}).tarjetaTs;
@@ -255,6 +257,8 @@ function cumpleInputs(pre,v){const d=v?+v.slice(8,10):0,m=v?+v.slice(5,7):0;
   return `<div class="grid2"><select id="${pre}D"><option value="">Día</option>${Array.from({length:31},(_,i)=>`<option ${i+1===d?'selected':''}>${i+1}</option>`).join('')}</select>
   <select id="${pre}M"><option value="">Mes</option>${MES.map((x,i)=>`<option value="${i+1}" ${i+1===m?'selected':''}>${x}</option>`).join('')}</select></div>`}
 function cumpleVal(pre){const d=+val(pre+'D'),m=+val(pre+'M');return d&&m?`2000-${pad(m)}-${pad(d)}`:''}
+/* Corte = venta de servicio. No lo son los productos de la tienda ni el pago de una mensualidad. */
+const esCorte=v=>v.tipo!=='producto'&&v.tipo!=='mensualidad';
 const ventaTotal=v=>(v.gratis?0:+v.monto||0)+(+v.propina||0);
 const pn=p=>p?(p.n+(p.det?' '+p.det:'')):'Producto';
 const prod=id=>db.productos.find(p=>p.id===id);
@@ -287,7 +291,7 @@ function resumenEn(en){
   const V=db.ventas.filter(en),G=db.gastos.filter(en);
   const VB=V.filter(v=>v.tipo!=='producto'),VT=V.filter(v=>v.tipo==='producto');
   const sum=(a,f)=>a.reduce((s,x)=>s+(+f(x)||0),0);
-  const b={ing:sum(VB,ventaTotal),cos:sum(G.filter(g=>g.tipo==='negocio'),g=>g.monto),n:VB.length};b.util=b.ing-b.cos;
+  const b={ing:sum(VB,ventaTotal),cos:sum(G.filter(g=>g.tipo==='negocio'),g=>g.monto),n:VB.filter(esCorte).length};b.util=b.ing-b.cos;
   const GT=G.filter(g=>g.tipo==='tienda');
   const t={ing:sum(VT,ventaTotal),cogs:sum(VT,v=>v.costo),otros:sum(GT.filter(g=>g.cat!=='Mercadería'),g=>g.monto),
     compras:sum(GT.filter(g=>g.cat==='Mercadería'),g=>g.monto),n:sum(VT,v=>v.cant||1)};t.util=t.ing-t.cogs-t.otros;
@@ -391,10 +395,12 @@ VIEWS.clientes=()=>{
   const list=db.clientes.filter(c=>!q||normTxt(c.nombre+' '+c.tel).includes(q))
     .map(c=>({c,lv:lastVisit(c.id)})).sort((a,b)=>a.c.nombre.localeCompare(b.c.nombre));
   return `<div class="between" style="margin-bottom:10px"><h2 class="goldtxt" style="margin:0">Clientes</h2><button class="btn sm" onclick="formCliente()">+ Cliente</button></div>
+  ${(()=>{const A=db.mensualidades.filter(m=>estadoMens(m)==='activa');return A.length?`<div class="card"><h3>📅 Mensualidades activas (${A.length})</h3>${A.sort((a,b)=>a.fin.localeCompare(b.fin)).map(m=>`<div class="between mt" onclick="verCliente('${m.clienteId}')" style="cursor:pointer"><span>${esc((cli(m.clienteId)||{}).nombre||'')} <span class="mut">· ${esc(m.plan)}</span></span><span class="mut">${usadosMens(m.id)}/${m.cortes} · vence ${fmtD(m.fin)}</span></div>`).join('')}</div>`:''})()}
   <input class="search" type="search" autocomplete="off" placeholder="🔍 Buscar nombre o teléfono" value="${esc(sub.q||'')}" oninput="filtrarClientes(this.value)">
   <div class="card">${list.length?list.map(({c,lv})=>{const n=visits(c.id);
     return `<div class="row cliRow" data-k="${esc(normTxt(c.nombre+' '+c.tel))}" onclick="verCliente('${c.id}')"><div class="av">${ini(c.nombre)}</div><div class="main"><b>${esc(c.nombre)}</b>
     <span>${lv?`Última: hace ${diffDays(lv,today())} días`:'Sin visitas'}${frecuencia(c.id)?` · cada ~${frecuencia(c.id)}d`:''}${tieneTarjeta(c.id)?` · ⭐ ${n}/${meta()}`:''}</span></div>
+    ${(()=>{const m=mensActiva(c.id);return m?`<span class="pill gold">📅 ${usadosMens(m.id)}/${m.cortes}</span>`:''})()}
     ${deuda(c.id)?`<span class="pill red">Fió ${money(deuda(c.id))}</span>`:''}
     ${atrasado(c.id,lv)?'<span class="pill red">Atrasado</span>':''}</div>`}).join(''):(db.clientes.length?'':'<div class="empty">Aún no hay clientes</div>')}<div id="cliVacio" class="empty" style="display:${list.length||!db.clientes.length?'none':'block'}">Ningún cliente coincide</div></div>`;
 };
@@ -522,6 +528,8 @@ VIEWS.finanzas=()=>{
   }else{
     const kb=Math.round(new Blob([JSON.stringify(db)]).size/1024);
     body=`<div class="card"><h3>Servicios y precios</h3>${db.servicios.map((s,i)=>`<div class="row"><div class="main"><b>${esc(s.n)}</b></div><b>${money(s.p)}</b><button class="btn sm sec" onclick="formServ(${i})">Editar</button></div>`).join('')}<button class="btn sec block mt" onclick="formServ()">+ Servicio</button></div>
+    <div class="card"><h3>📅 Planes de mensualidad</h3>${db.planes.map((x,i)=>`<div class="row"><div class="main"><b>${esc(x.n)}</b><span>${x.cortes} cortes · ${x.dias} días</span></div><b>${money(x.p)}</b><button class="btn sm sec" onclick="formPlan(${i})">Editar</button></div>`).join('')}<button class="btn sec block mt" onclick="formPlan()">+ Plan</button>
+      <label>Mensaje de mensualidad</label><textarea id="msgMens" rows="3" onchange="db.cfg.msgMens=this.value;save()">${esc(db.cfg.msgMens)}</textarea><div class="mut">Usa {nombre}, {plan}, {inicio}, {fin}, {cortes}</div></div>
     <div class="card"><h3>💾 Respaldo</h3><div class="mut">Tus datos viven en este teléfono (${kb} KB). Exporta un respaldo cada semana y guárdalo en Drive o mándatelo por WhatsApp. Incluye las fotos de los clientes${db.media.length?` (${db.media.length})`:''}.</div>
     <div class="grid2 mt"><button class="btn" onclick="exportar()">Exportar</button><button class="btn sec" onclick="$('#importIn').click()">Importar</button></div>
     <div class="mut mt">Último respaldo: ${db.cfg.ultBackup?fmtD(db.cfg.ultBackup):'nunca'}</div></div>
@@ -571,14 +579,15 @@ function quickMenu(){openSheet(`<h2 class="goldtxt">¿Qué registras?</h2><div c
 
 /* --- Venta --- */
 function formVenta(id,pre){
-  if(id){const x=db.ventas.find(y=>y.id===id);if(x&&x.tipo==='producto')return formVentaProd(id)}
+  if(id){const x=db.ventas.find(y=>y.id===id);if(x&&x.tipo==='producto')return formVentaProd(id);
+    if(x&&x.tipo==='mensualidad'){toast('La mensualidad se edita desde la ficha del cliente');return verCliente(x.clienteId)}}
   const v=id?db.ventas.find(x=>x.id===id):{fecha:today(),pago:'Efectivo',propina:0,...(pre||{})};
   const sv=v.servicio||db.servicios[0]?.n;
   openSheet(`<h2 class="goldtxt">${id?'Editar venta':'Nueva venta'}</h2>
   ${id?'':`<div class="tabs"><div class="tab on">✂️ Servicio</div><div class="tab" onclick="formVentaProd(null,{clienteId:val('vC')})">👕 Producto</div></div>`}
   <label>Cliente</label><select id="vC" onchange="chkGratis()">${cliOptions(v.clienteId)}</select>
   <div id="vNew" style="${v.clienteId?'display:none':''}"><div class="grid2"><div><label>Nombre (nuevo)</label><input id="vN" placeholder="Opcional"></div><div><label>WhatsApp</label><input id="vT" inputmode="tel" placeholder="9 1234 5678"></div></div><label>Cumpleaños (opcional)</label>${cumpleInputs('vB','')}</div>
-  <div id="vGr"></div><div id="vUlt"></div>
+  <div id="vGr"></div><div id="vMs"></div><div id="vUlt"></div>
   <label>Servicio</label><div class="chips" id="vS">${db.servicios.map(s=>`<div class="chip ${s.n===sv?'on':''}" data-n="${esc(s.n)}" data-p="${s.p}" onclick="pickServ(this)">${esc(s.n)}<small>${money(s.p)}</small></div>`).join('')}</div>
   <div class="grid2"><div><label>Precio</label><input id="vM" type="number" inputmode="numeric" value="${v.monto??(db.servicios.find(s=>s.n===sv)||{}).p??''}"></div>
   <div><label>Propina</label><input id="vP" type="number" inputmode="numeric" value="${v.propina||''}" placeholder="0"></div></div>
@@ -593,7 +602,7 @@ function formVenta(id,pre){
   $('#vC').addEventListener('change',e=>$('#vNew').style.display=e.target.value?'none':'');
   chkGratis();
 }
-function chkGratis(){ultimoCorteVenta();const c=val('vC');const e=$('#vGr'),g=$('#vG');if(!e||!g||g.dataset.edit)return;
+function chkGratis(){ultimoCorteVenta();chkMens();const c=val('vC');const e=$('#vGr'),g=$('#vG');if(!e||!g||g.dataset.edit)return;
   const pr=c&&tieneTarjeta(c)?premioEn(proximo(c)):null;
   if(pr&&proximo(c)===meta()){e.innerHTML=`<div class="pill gold mt" style="display:inline-block">🎁 Corte ${meta()}: ${esc(pr.p)}</div>`;g.checked=true;g.dataset.auto=1}
   else if(pr){e.innerHTML=`<div class="pill gold mt" style="display:inline-block">🎁 Este corte (${proximo(c)}°) incluye: ${esc(pr.p)}</div>`;if(g.dataset.auto){g.checked=false;delete g.dataset.auto}}
@@ -610,6 +619,8 @@ function saveVenta(id,citaId){
   const s=$('#vS .on'),p=$('#vPg .on');
   if(p&&p.textContent==='Fiado'&&!cid){toast('Para fiar, elige o crea el cliente');return}
   const o={clienteId:cid,servicio:s?s.dataset.n:'Servicio',monto:+val('vM')||0,propina:+val('vP')||0,pago:p?p.textContent:'Efectivo',gratis:$('#vG').checked,fecha:val('vF')||today()};
+  const usaM=$('#vMsU')&&$('#vMsU').checked?mensActiva(cid,o.fecha,id):null;
+  if(usaM){o.mensId=usaM.id;o.monto=0;o.pago='Mensualidad';o.gratis=false}else if(id){const x=db.ventas.find(y=>y.id===id);if(x&&x.mensId){delete x.mensId}}
   const mFiles=$('#vMedia')?[...$('#vMedia').files]:[];
   if(mFiles.length&&!cid){toast('Para guardar la foto, elige o crea el cliente');return}
   if(id){Object.assign(db.ventas.find(x=>x.id===id),o);if(mFiles.length)guardarMedia(mFiles,cid,id,o.fecha).then(n=>n&&toast(`📸 ${n} archivo(s) guardado(s)`))}
@@ -623,6 +634,11 @@ function saveVenta(id,citaId){
   save();closeSheet();render();
   const nav=db.inventario.find(i=>i.id==='navajas');
   if(nav&&+nav.stock<=+nav.min)toast(`⚠️ Quedan ${nav.stock} navajas`);
+  if(!id&&usaM){const k=cli(cid),u=usadosMens(usaM.id);
+    openSheet(`<h2 class="goldtxt">✅ Corte de mensualidad</h2><div class="card"><div class="stamps">${'✂️'.repeat(u)+'⚪'.repeat(Math.max(0,usaM.cortes-u))}</div>
+      <div class="mut mt">${esc(k.nombre)} lleva ${u} de ${usaM.cortes} · vence ${fmtD(usaM.fin)}</div></div>
+      ${k.tel?`<button class="btn wa block" onclick="waMens('${usaM.id}');closeSheet()">💬 Avisarle cuántos le quedan</button>`:''}
+      <button class="btn sec block mt" onclick="closeSheet()">Listo</button>`);return}
   if(!id&&cid){const k=cli(cid);
     if(!tieneTarjeta(cid))openSheet(`<h2 class="goldtxt">✅ Venta guardada</h2><div class="card"><div class="mut">${esc(k.nombre)} aún no tiene tarjeta de fidelidad.</div></div>
       <button class="btn block" onclick="iniciarTarjeta('${cid}',${nueva.ts})">⭐ Iniciar tarjeta con este corte</button><button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);
@@ -687,9 +703,10 @@ function verCliente(id){window._volver=null;
     ${frecuencia(id)&&lv?`<div class="mut mt">${atrasado(id,lv)?`⚠️ Atrasado: lleva ${diffDays(lv,today())} días`:`Próximo corte aprox. ${fmtD(addDays(lv,frecuencia(id)))}`}</div>`:''}</div>
   ${deuda(id)?`<div class="card mt" style="border-color:#5a2a27"><div class="between"><h3 style="margin:0;color:#ffb4ae">💸 Fió</h3><b class="neg">${money(deuda(id))}</b></div>
     <div class="grid2 mt"><button class="btn sm wa" onclick="waFiado('${id}')">💬 Recordar</button><button class="btn sm" onclick="pagarFiado('${id}')">Pagó</button></div></div>`:''}
+  ${cardMens(id)}
   <div class="card mt" ${c.tarjetaTs?`onclick="waSello('${id}')" style="cursor:pointer"`:''}><div class="between"><h3 style="margin:0">Tarjeta ⭐</h3>${c.tarjetaTs?'<span class="pill gold">Toca para enviar 💬</span>':''}</div>${c.tarjetaTs?`<div class="stamps mt">${sellos(visits(id))}</div><div class="mut mt">Desde ${fmtD(dkey(new Date(c.tarjetaTs)))} · ${visits(id)} de ${meta()}</div>
     <div class="grid2 mt"><button class="btn sm wa" onclick="event.stopPropagation();waSello('${id}')">💬 Enviar</button><button class="btn sm sec" onclick="event.stopPropagation();reiniciarTarjeta('${id}')">Reiniciar</button></div>`
-    :(()=>{const hoy=V.filter(v=>v.tipo!=='producto'&&v.fecha===today()).sort((a,b)=>(b.ts||0)-(a.ts||0))[0];
+    :(()=>{const hoy=V.filter(v=>esCorte(v)&&v.fecha===today()).sort((a,b)=>(b.ts||0)-(a.ts||0))[0];
       return `<div class="mut">Sin tarjeta todavía.</div>${hoy?`<button class="btn block mt" onclick="iniciarTarjeta('${id}',${+hoy.ts||0})">⭐ Iniciar con el corte de hoy</button>`:''}
       <button class="btn ${hoy?'sec ':''}block mt" onclick="iniciarTarjeta('${id}')">⭐ Iniciar desde el próximo corte</button>`})()}</div>
   ${(()=>{const M=mediaDe(id);return `<div class="card"><div class="between"><h3 style="margin:0">📸 Fotos de sus cortes</h3><button class="btn sm sec" onclick="subirMediaCliente('${id}')">+ Subir</button></div>
@@ -809,7 +826,7 @@ function saveServ(i){const o={n:val('sN'),p:+val('sP')||0};if(!o.n)return;if(i!=
 
 function delItem(col,id){if(!confirm('¿Eliminar? No se puede deshacer.'))return;
   db[col]=db[col].filter(x=>x.id!==id);
-  if(col==='clientes'){db.citas=db.citas.filter(c=>c.clienteId!==id);
+  if(col==='clientes'){db.citas=db.citas.filter(c=>c.clienteId!==id);db.mensualidades=db.mensualidades.filter(m=>m.clienteId!==id);
     db.media.filter(m=>m.clienteId===id).forEach(m=>idbDo('readwrite',st=>st.delete(m.id)).catch(()=>{}));db.media=db.media.filter(m=>m.clienteId!==id)}
   save();closeSheet();render();toast('Eliminado')}
 
@@ -866,7 +883,7 @@ function verFotos(cid){const c=cli(cid);const M=mediaDe(cid);window._volver=()=>
   const F=Object.keys(dias).sort().reverse();
   openSheet(`<h2 class="goldtxt">Cortes de ${esc(c.nombre.split(' ')[0])}</h2>
   <div class="between" style="margin-bottom:6px"><span class="mut">${F.length} corte(s) con foto · ${M.length} archivo(s)</span><button class="btn sm sec" onclick="subirMediaCliente('${cid}')">+ Subir</button></div>
-  ${F.length?F.map((f,i)=>{const sv=db.ventas.filter(v=>v.clienteId===cid&&v.fecha===f&&v.tipo!=='producto').map(v=>v.servicio);
+  ${F.length?F.map((f,i)=>{const sv=db.ventas.filter(v=>v.clienteId===cid&&v.fecha===f&&esCorte(v)).map(v=>v.servicio);
     return `<div class="card"><div class="between"><h3 style="margin:0">${fmtD(f)}${i===0?' · último':''}</h3><span class="mut">hace ${diffDays(f,today())} días</span></div>
     ${sv.length?`<div class="mut mt">✂️ ${esc([...new Set(sv)].join(', '))}</div>`:''}
     <div class="gal mt" style="${dias[f].length===1?'grid-template-columns:1fr':''}">${dias[f].map(m=>`<div class="m" style="${dias[f].length===1?'aspect-ratio:4/3':''}" onclick="verMedia('${m.id}')">${tagMedia(m)}${m.tipo==='video'?'<span>▶ video</span>':''}</div>`).join('')}</div></div>`}).join('')
@@ -886,6 +903,71 @@ function subirMediaCliente(cid){const i=document.createElement('input');i.type='
 async function ultimoCorteVenta(){const e=$('#vUlt');if(!e)return;const c=val('vC');const m=c&&mediaDe(c)[0];
   if(!m){e.innerHTML='';return}
   e.innerHTML=`<div class="card mt" style="margin-bottom:0" onclick="verMedia('${m.id}')"><div class="between"><h3 style="margin:0">📸 Último corte</h3><span class="mut">${fmtD(m.fecha)}</span></div><div class="mt">${tagMedia(m,'ultimo')}</div><div class="mut mt">¿Lo quiere igual?</div></div>`;pintarMedia(e)}
+
+/* ====================== MENSUALIDADES ======================
+   Plan (db.planes): nombre, precio, cortes incluidos y días de duración. Al activarlo a un cliente se crea
+   db.mensualidades {id,clienteId,planId,plan,precio,cortes,inicio,fin,ventaId} y una venta tipo 'mensualidad'
+   por el precio (es la plata que entra). Cada corte que se registra "con mensualidad" va en $0 con mensId. */
+const usadosMens=mid=>db.ventas.filter(v=>v.mensId===mid).length;
+function mensActiva(cid,fecha,exceptoVenta){fecha=fecha||today();
+  return db.mensualidades.filter(m=>m.clienteId===cid&&m.inicio<=fecha&&m.fin>=fecha)
+    .find(m=>db.ventas.filter(v=>v.mensId===m.id&&v.id!==exceptoVenta).length<m.cortes)||null}
+const mensDe=cid=>db.mensualidades.filter(m=>m.clienteId===cid).sort((a,b)=>b.inicio.localeCompare(a.inicio));
+function estadoMens(m){const u=usadosMens(m.id),t=today();
+  return m.fin<t?'vencida':u>=m.cortes?'completa':m.inicio>t?'por empezar':'activa'}
+function chkMens(){const e=$('#vMs');if(!e)return;const cid=val('vC');const ed=$('#btnGuardar')&&$('#btnGuardar').getAttribute('onclick').match(/saveVenta\('([^']*)'/);
+  const vid=ed?ed[1]:'';const vv=vid?db.ventas.find(v=>v.id===vid):null;
+  const m=cid?mensActiva(cid,val('vF')||today(),vid):null;
+  if(!m){e.innerHTML='';return}
+  const u=db.ventas.filter(v=>v.mensId===m.id&&v.id!==vid).length;const on=vv?!!vv.mensId:true;
+  e.innerHTML=`<div class="card mt" style="margin-bottom:0;border-color:var(--gold)"><label class="flex" style="margin:0"><input type="checkbox" id="vMsU" style="width:22px;height:22px" ${on?'checked':''} onchange="usarMens()">
+    <span><b>📅 Usar mensualidad (${esc(m.plan)})</b><br><span class="mut">Corte ${u+1} de ${m.cortes} · vence ${fmtD(m.fin)} · no suma plata</span></span></label></div>`;
+  if(on&&!vv){const ch=[...document.querySelectorAll('#vS .chip')].find(x=>x.dataset.n===m.plan);if(ch)pickServ(ch)}usarMens()}
+function usarMens(){const on=$('#vMsU')&&$('#vMsU').checked;const pr=$('#vM');if(!pr)return;
+  pr.closest('.grid2').style.opacity=on?.4:1;pr.disabled=on;$('#vPg').style.display=on?'none':'';$('#vPg').previousElementSibling.style.display=on?'none':''}
+function formMens(cid){const P=db.planes;if(!P.length){toast('Primero crea un plan en Finanzas → Ajustes');return}
+  const c=cli(cid);
+  openSheet(`<h2 class="goldtxt">📅 Nueva mensualidad</h2><div class="mut">${esc(c.nombre)}</div>
+  <label>Plan</label><div class="chips" id="mP">${P.map((x,i)=>`<div class="chip ${i?'':'on'}" data-i="${i}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on');mensPlan()">${esc(x.n)}<small>${money(x.p)}</small></div>`).join('')}</div>
+  <div class="grid2"><div><label>Precio</label><input id="mPr" type="number" inputmode="numeric"></div><div><label>Cortes</label><input id="mCo" type="number" inputmode="numeric" oninput="mensFin()"></div></div>
+  <div class="grid2"><div><label>Comienza</label><input id="mIn" type="date" value="${today()}" onchange="mensFin()"></div><div><label>Días</label><input id="mDi" type="number" inputmode="numeric" oninput="mensFin()"></div></div>
+  <div id="mFin" class="pill gold mt" style="display:inline-block"></div>
+  <label>Pago</label><div class="chips" id="mPg">${MEDIOS.map((x,i)=>`<div class="chip ${i?'':'on'}" onclick="[...this.parentNode.children].forEach(c=>c.classList.remove('on'));this.classList.add('on')">${x}</div>`).join('')}</div>
+  <button class="btn block mt" onclick="saveMens('${cid}')">Activar mensualidad</button>`);mensPlan()}
+function mensPlan(){const x=db.planes[+$('#mP .on').dataset.i];$('#mPr').value=x.p;$('#mCo').value=x.cortes;$('#mDi').value=x.dias;mensFin()}
+const finMens=(ini,dias)=>addDays(ini,Math.max(1,+dias||30)-1);
+function mensFin(){$('#mFin').textContent=`${+val('mCo')||0} cortes del ${fmtD(val('mIn')||today())} al ${fmtD(finMens(val('mIn')||today(),val('mDi')))}`}
+function saveMens(cid){const x=db.planes[+$('#mP .on').dataset.i];const ini=val('mIn')||today();const pg=$('#mPg .on').textContent;
+  const m={id:uid(),clienteId:cid,planId:x.id,plan:x.n,precio:+val('mPr')||0,cortes:Math.max(1,+val('mCo')||x.cortes),inicio:ini,fin:finMens(ini,val('mDi'))};
+  const v={id:uid(),ts:Date.now(),tipo:'mensualidad',clienteId:cid,servicio:'Mensualidad '+x.n,monto:m.precio,propina:0,pago:pg,gratis:false,fecha:ini};
+  m.ventaId=v.id;db.mensualidades.push(m);db.ventas.push(v);mark('venta');save();render();
+  const c=cli(cid);
+  openSheet(`<h2 class="goldtxt">✅ Mensualidad activada</h2><div class="card"><b>${esc(x.n)} · ${money(m.precio)}</b><div class="mut mt">${m.cortes} cortes del ${fmtD(m.inicio)} al ${fmtD(m.fin)}</div></div>
+  ${c.tel?`<button class="btn wa block" onclick="waMens('${m.id}');closeSheet()">💬 Enviar mensaje al cliente</button>`:'<div class="mut">El cliente no tiene WhatsApp guardado.</div>'}
+  <button class="btn sec block mt" onclick="verCliente('${cid}')">Ver ficha</button>`)}
+function waMens(mid){const m=db.mensualidades.find(x=>x.id===mid);const c=cli(m.clienteId);const u=usadosMens(mid);
+  let msg=fill(db.cfg.msgMens,{nombre:c.nombre.split(' ')[0],plan:m.plan,inicio:fmtD(m.inicio),fin:fmtD(m.fin),cortes:m.cortes});
+  if(u)msg+=`\nLlevas ${u} de ${m.cortes} cortes. ${u>=m.cortes?'¡Completaste tu mensualidad! 👑':`Te quedan ${m.cortes-u} hasta el ${fmtD(m.fin)}.`}`;
+  wa(c.tel,msg)}
+function borrarMens(mid){const m=db.mensualidades.find(x=>x.id===mid);if(!m)return;
+  if(!confirm('¿Eliminar esta mensualidad? Se borra también el pago registrado. Los cortes ya hechos quedan en el historial.'))return;
+  db.ventas=db.ventas.filter(v=>v.id!==m.ventaId);db.ventas.forEach(v=>{if(v.mensId===mid)delete v.mensId});
+  db.mensualidades=db.mensualidades.filter(x=>x.id!==mid);save();render();verCliente(m.clienteId);toast('Mensualidad eliminada')}
+function cardMens(cid){const M=mensDe(cid);const act=M.find(m=>['activa','por empezar'].includes(estadoMens(m)));
+  const tag=m=>{const e=estadoMens(m);return `<span class="pill ${e==='activa'?'gold':e==='por empezar'?'':'red'}">${e}</span>`};
+  return `<div class="card"><div class="between"><h3 style="margin:0">📅 Mensualidad</h3><button class="btn sm ${act?'sec':''}" onclick="formMens('${cid}')">+ Activar</button></div>
+  ${act?(()=>{const u=usadosMens(act.id);return `<div class="mt"><b>${esc(act.plan)}</b> ${tag(act)}<div class="stamps mt">${'✂️'.repeat(u)+'⚪'.repeat(Math.max(0,act.cortes-u))}</div>
+    <div class="mut mt">${u} de ${act.cortes} cortes · del ${fmtD(act.inicio)} al ${fmtD(act.fin)}</div>
+    <div class="grid2 mt"><button class="btn sm wa" onclick="waMens('${act.id}')">💬 Enviar</button><button class="btn sm del" style="margin:0" onclick="borrarMens('${act.id}')">Eliminar</button></div></div>`})()
+    :'<div class="mut mt">Sin mensualidad activa.</div>'}
+  ${M.filter(m=>m!==act).slice(0,4).map(m=>`<div class="between mt"><span class="mut">${esc(m.plan)} · ${fmtD(m.inicio)} – ${fmtD(m.fin)} · ${usadosMens(m.id)}/${m.cortes}</span>${tag(m)}</div>`).join('')}</div>`}
+function formPlan(i){const x=i!==undefined?db.planes[i]:{n:'',p:'',cortes:4,dias:30};
+  openSheet(`<h2 class="goldtxt">📅 Plan de mensualidad</h2><label>Nombre</label><input id="plN" value="${esc(x.n)}" placeholder="Ej: Corte + Barba">
+  <div class="grid2"><div><label>Precio</label><input id="plP" type="number" inputmode="numeric" value="${x.p}"></div><div><label>Cortes incluidos</label><input id="plC" type="number" inputmode="numeric" value="${x.cortes}"></div></div>
+  <label>Dura (días)</label><input id="plD" type="number" inputmode="numeric" value="${x.dias}">
+  <button class="btn block mt" onclick="savePlan(${i})">Guardar</button>${i!==undefined?`<button class="btn del block mt" onclick="if(confirm('¿Eliminar plan? Las mensualidades ya activadas no cambian.')){db.planes.splice(${i},1);save();closeSheet();render()}">Eliminar</button>`:''}`)}
+function savePlan(i){const o={n:val('plN'),p:+val('plP')||0,cortes:Math.max(1,+val('plC')||4),dias:Math.max(1,+val('plD')||30)};if(!o.n){toast('Ponle nombre');return}
+  if(i!==undefined)Object.assign(db.planes[i],o);else db.planes.push({id:uid(),...o});save();closeSheet();render()}
 
 /* ====================== FIADO ====================== */
 function waFiado(id){const c=cli(id);wa(c.tel,fill(db.cfg.msgFiado,{nombre:c.nombre.split(' ')[0],monto:money(deuda(id))}))}
