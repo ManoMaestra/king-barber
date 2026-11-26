@@ -227,12 +227,23 @@ const premios=()=>[...(db.cfg.premios||[])].filter(x=>+x.n>0).sort((a,b)=>a.n-b.
 const meta=()=>Math.max(2,...premios().map(x=>+x.n));
 const premioEn=n=>premios().find(x=>+x.n===n);
 function visits(id){const c=cli(id);if(!c||!c.tarjetaTs)return 0;
-  const t=db.ventas.filter(v=>v.clienteId===id&&esCorte(v)&&(+v.ts||0)>=c.tarjetaTs).length;
+  const t=Math.max(0,db.ventas.filter(v=>v.clienteId===id&&esCorte(v)&&(+v.ts||0)>=c.tarjetaTs).length+(+c.tarjetaAj||0));
   return t?((t-1)%meta())+1:0}
+/* Cortes del cliente registrados antes de iniciar la tarjeta (no cuentan salvo que Diego los sume). */
+const cortesPrevios=id=>{const c=cli(id);return c&&c.tarjetaTs?db.ventas.filter(v=>v.clienteId===id&&esCorte(v)&&(+v.ts||0)<c.tarjetaTs).length:0};
+/* Corrección manual de sellos: guarda un ajuste para que la tarjeta quede en n. */
+function corregirSellos(id){const c=cli(id);const n=visits(id);const pv=cortesPrevios(id);
+  openSheet(`<h2 class="goldtxt">✏️ Corregir tarjeta</h2><div class="mut">${esc(c.nombre)} tiene ${n} de ${meta()}.${pv?` Tiene ${pv} corte(s) anterior(es) a la tarjeta que no se cuentan.`:''}</div>
+  <label>¿Cuántos cortes lleva en la tarjeta?</label><input id="csN" type="number" inputmode="numeric" min="0" max="${meta()}" value="${n}">
+  ${pv?`<button class="btn sec block mt" onclick="$('#csN').value=Math.min(${meta()},${n+pv})">+ Sumar sus ${pv} corte(s) anteriores</button>`:''}
+  <button class="btn block mt" onclick="saveSellos('${id}')">Guardar</button>`)}
+function saveSellos(id){const c=cli(id);const q=Math.max(0,Math.min(meta(),Math.floor(+val('csN')||0)));
+  c.tarjetaAj=(+c.tarjetaAj||0)+(q-visits(id));save();verCliente(id);toast(`⭐ Tarjeta en ${visits(id)} de ${meta()}`)}
 const proximo=id=>{const n=visits(id);return n>=meta()?1:n+1};
 const tieneTarjeta=id=>!!(cli(id)||{}).tarjetaTs;
-function iniciarTarjeta(id,ts){const c=cli(id);c.tarjetaTs=ts||Date.now();save();render();
+function iniciarTarjeta(id,ts){const c=cli(id);c.tarjetaTs=ts||Date.now();c.tarjetaAj=0;save();render();
   if(c.tel)openSheet(`<h2 class="goldtxt">⭐ Tarjeta iniciada</h2><div class="card"><div class="stamps">${sellos(visits(id))}</div><div class="mut mt">${esc(c.nombre)} lleva ${visits(id)} de ${meta()}</div></div>
+    ${cortesPrevios(id)?`<button class="btn sec block" style="margin-bottom:8px" onclick="corregirSellos('${id}')">+ Contar sus ${cortesPrevios(id)} corte(s) anteriores</button>`:''}
     <button class="btn wa block" onclick="waSello('${id}');closeSheet()">💬 Enviar tarjeta por WhatsApp</button><button class="btn sec block mt" onclick="closeSheet()">Ahora no</button>`);
   else{closeSheet();toast('⭐ Tarjeta iniciada')}}
 function reiniciarTarjeta(id){if(!confirm('¿Reiniciar la tarjeta? Los sellos vuelven a 0.'))return;iniciarTarjeta(id,Date.now())}
@@ -705,7 +716,7 @@ function verCliente(id){window._volver=null;
     <div class="grid2 mt"><button class="btn sm wa" onclick="waFiado('${id}')">💬 Recordar</button><button class="btn sm" onclick="pagarFiado('${id}')">Pagó</button></div></div>`:''}
   ${cardMens(id)}
   <div class="card mt" ${c.tarjetaTs?`onclick="waSello('${id}')" style="cursor:pointer"`:''}><div class="between"><h3 style="margin:0">Tarjeta ⭐</h3>${c.tarjetaTs?'<span class="pill gold">Toca para enviar 💬</span>':''}</div>${c.tarjetaTs?`<div class="stamps mt">${sellos(visits(id))}</div><div class="mut mt">Desde ${fmtD(dkey(new Date(c.tarjetaTs)))} · ${visits(id)} de ${meta()}</div>
-    <div class="grid2 mt"><button class="btn sm wa" onclick="event.stopPropagation();waSello('${id}')">💬 Enviar</button><button class="btn sm sec" onclick="event.stopPropagation();reiniciarTarjeta('${id}')">Reiniciar</button></div>`
+    <div class="grid3 mt"><button class="btn sm wa" onclick="event.stopPropagation();waSello('${id}')">💬 Enviar</button><button class="btn sm sec" onclick="event.stopPropagation();corregirSellos('${id}')">✏️ Corregir</button><button class="btn sm sec" onclick="event.stopPropagation();reiniciarTarjeta('${id}')">Reiniciar</button></div>`
     :(()=>{const hoy=V.filter(v=>esCorte(v)&&v.fecha===today()).sort((a,b)=>(b.ts||0)-(a.ts||0))[0];
       return `<div class="mut">Sin tarjeta todavía.</div>${hoy?`<button class="btn block mt" onclick="iniciarTarjeta('${id}',${+hoy.ts||0})">⭐ Iniciar con el corte de hoy</button>`:''}
       <button class="btn ${hoy?'sec ':''}block mt" onclick="iniciarTarjeta('${id}')">⭐ Iniciar desde el próximo corte</button>`})()}</div>
